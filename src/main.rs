@@ -3336,6 +3336,15 @@ mod occupancy {
             }
             true
         }
+        pub fn write_id(&self, id_field: &mut [Vec<Vec<usize>>], target_id: usize) {
+            for id_plane in id_field.iter_mut().take(self.range.zrange.1 + 1).skip(self.range.zrange.0) {
+                for id_line in id_plane.iter_mut().take(self.range.yrange.1 + 1).skip(self.range.yrange.0) {
+                    for id_value in id_line.iter_mut().take(self.range.xrange.1 + 1).skip(self.range.xrange.0) {
+                        *id_value = target_id;
+                    }
+                }                
+            }
+        }
     }
 
     #[cfg(test)]
@@ -3550,6 +3559,7 @@ mod solver {
     use crate::occupancy::Occupancy;
     use crate::state::*;
     use crate::MaxFlow;
+    use std::collections::BTreeMap;
     pub struct Solver {
         d: usize,
         silhouettes: Vec<Silhouette>,
@@ -3581,7 +3591,7 @@ mod solver {
                 can_place,
             }
         }
-        fn max_match(occus: &[Vec<Occupancy>]) {
+        fn max_match(occus: &[Vec<Occupancy>], d: usize) -> (Vec<Vec<Vec<Vec<usize>>>>, usize){
             let n0 = occus[0].len();
             let n1 = occus[1].len();
             let mut mf = MaxFlow::new(n0 + n1 + 2);
@@ -3600,19 +3610,100 @@ mod solver {
                 mf.add_edge(n0 + i1, n0 + n1 + 1, 1);
             }
             let _ = mf.max_flow(n0 + n1, n0 + n1 + 1);
-            for i0 in 0..occus[0].len() {
+            let mut id_cnt = 0;
+            let mut id_field = vec![vec![vec![vec![0; d]; d]; d]; 2];
+            for (i0, o0) in occus[0].iter().enumerate() {
                 for e in mf.g[i0].iter() {
                     if e.flow == 0 {
                         continue;
                     }
+                    id_cnt += 1;
                     let i1 = e.to;
+                    if (i1 < n0) || (i1 >= n0 + n1) {
+                        continue;
+                    }
+                    let i1 = i1 - n0;
+                    let o1 = &occus[1][i1];
+                    o0.write_id(&mut id_field[0], id_cnt);
+                    o1.write_id(&mut id_field[1], id_cnt);
+                }
+            }
+            (id_field, id_cnt)
+        }
+        fn remove(&self, id_field: &mut [Vec<Vec<Vec<usize>>>]) {
+            // 専有ブロックごとに判定、優先度をつけて
+            for (id_field, silhouette) in id_field.iter_mut().zip(self.silhouettes.iter()) {
+                for z in 0..self.d {
+                    for y in 0..self.d {
+                        for x in 0..self.d {
+                            if !silhouette.zx[z][x] || !silhouette.zy[z][y] {
+                                continue;
+                            }
+                            fn zx_any(id_field: &[Vec<Vec<usize>>], z: usize, x: usize, remove_y: usize) -> bool {
+                                let d = id_field.len();
+                                for y in 0..d {
+                                    if y == remove_y {
+                                        continue;
+                                    }
+                                    if id_field[z][y][x] > 0 {
+                                        return true;
+                                    }
+                                }
+                                false
+                            }
+                            fn zy_any(id_field: &[Vec<Vec<usize>>], z: usize, y: usize, remove_x: usize) -> bool {
+                                let d = id_field.len();
+                                for x in 0..d {
+                                    if x == remove_x {
+                                        continue;
+                                    }
+                                    if id_field[z][y][x] > 0 {
+                                        return true;
+                                    }
+                                }
+                                false
+                            }
+                            if zx_any(id_field, z, x, y) && zy_any(id_field, z, y, x) {
+                                id_field[z][y][x] = 0;
+                            }
+                        }
+                    }
                 }
             }
         }
         pub fn solve(&self) {
             let state = State::new(&self.silhouettes, self.d);
             let occus = state.occupancies();
-            Self::max_match(&occus);
+            let (mut id_field, id_cnt) = Self::max_match(&occus, self.d);
+            self.remove(&mut id_field);
+            Self::output(id_field);
+        }
+        fn output(id_field: Vec<Vec<Vec<Vec<usize>>>>) {
+            let mut st = BTreeMap::new();
+            st.insert(0, 0);
+            for bx in id_field.iter() {
+                for plane in bx.iter() {
+                    for line in plane.iter() {
+                        for &val in line.iter() {
+                            st.insert(val, 0);
+                        }
+                    }
+                }
+            }
+            for (i, (_, v)) in st.iter_mut().enumerate() {
+                *v = i;
+            }
+            println!("{}", st.len());
+            for id_field in id_field {
+                for plane in id_field {
+                    for line in plane {
+                        for val in line {
+                            print!("{} ", st[&val]);
+                        }
+                    }
+                }
+                println!();
+            }
         }
     }
 }
