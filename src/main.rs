@@ -3152,12 +3152,27 @@ mod occupancy {
                 range,
             }
         }
-        pub fn new(id_fields: &[Vec<Vec<usize>>], id_val: usize, range: OccuRange) -> Self {
+        pub fn new(id_fields: &[Vec<Vec<usize>>], target_id: usize, range: OccuRange) -> Self {
             let mut ret = Self::new_empty(range);
-            for sz in range.zrange.0..=range.zrange.1 {
-                for sy in range.yrange.0..=range.yrange.1 {
-                    for sx in range.xrange.0..=range.xrange.1 {
-                        if id_fields[sz][sy][sx] == id_val {
+            for (sz, id_plane) in id_fields
+                .iter()
+                .enumerate()
+                .take(range.zrange.1 + 1)
+                .skip(range.zrange.0)
+            {
+                for (sy, id_line) in id_plane
+                    .iter()
+                    .enumerate()
+                    .take(range.yrange.1 + 1)
+                    .skip(range.yrange.0)
+                {
+                    for (sx, &id_value) in id_line
+                        .iter()
+                        .enumerate()
+                        .take(range.xrange.1 + 1)
+                        .skip(range.xrange.0)
+                    {
+                        if id_value == target_id {
                             ret.set(sz, sy, sx, true);
                         }
                     }
@@ -3211,17 +3226,9 @@ mod occupancy {
             for z0 in self.range.zrange.0..=self.range.zrange.1 {
                 let z1 = ret.range.zrange.0 + (z0 - self.range.zrange.0);
                 for y0 in self.range.yrange.0..=self.range.yrange.1 {
-                    let x1 = if dir {
-                        self.range.d - 1 - y0
-                    } else {
-                        y0
-                    };
+                    let x1 = if dir { self.range.d - 1 - y0 } else { y0 };
                     for x0 in self.range.xrange.0..=self.range.xrange.1 {
-                        let y1 = if dir {
-                            x0
-                        } else {
-                            self.range.d - 1 - x0
-                        };
+                        let y1 = if dir { x0 } else { self.range.d - 1 - x0 };
                         if self.get(z0, y0, x0) {
                             ret.set(z1, y1, x1, true);
                         }
@@ -3247,19 +3254,11 @@ mod occupancy {
             }
             let mut ret = Self::new_empty(range);
             for z0 in self.range.zrange.0..=self.range.zrange.1 {
-                let x1 = if dir {
-                    self.range.d - 1 - z0
-                } else {
-                    z0
-                };
+                let x1 = if dir { self.range.d - 1 - z0 } else { z0 };
                 for y0 in self.range.yrange.0..=self.range.yrange.1 {
                     let y1 = ret.range.yrange.0 + (y0 - self.range.yrange.0);
                     for x0 in self.range.xrange.0..=self.range.xrange.1 {
-                        let z1 = if dir {
-                            x0
-                        } else {
-                            self.range.d - 1 - x0
-                        };
+                        let z1 = if dir { x0 } else { self.range.d - 1 - x0 };
                         if self.get(z0, y0, x0) {
                             ret.set(z1, y1, x1, true);
                         }
@@ -3285,17 +3284,9 @@ mod occupancy {
             }
             let mut ret = Self::new_empty(range);
             for z0 in self.range.zrange.0..=self.range.zrange.1 {
-                let y1 = if dir {
-                    self.range.d - 1 - z0
-                } else {
-                    z0
-                };
+                let y1 = if dir { self.range.d - 1 - z0 } else { z0 };
                 for y0 in self.range.yrange.0..=self.range.yrange.1 {
-                    let z1 = if dir {
-                        y0
-                    } else {
-                        self.range.d - 1 - y0
-                    };
+                    let z1 = if dir { y0 } else { self.range.d - 1 - y0 };
                     for x0 in self.range.xrange.0..=self.range.xrange.1 {
                         let x1 = ret.range.xrange.0 + (x0 - self.range.xrange.0);
                         if self.get(z0, y0, x0) {
@@ -3351,6 +3342,7 @@ mod occupancy {
     mod tests {
         use super::{OccuRange, Occupancy};
         use crate::XorShift64;
+        const TEST_LOOP: usize = 10000000;
         pub fn create_occ(
             d: usize,
             zsize: usize,
@@ -3376,7 +3368,7 @@ mod occupancy {
         fn test_rot_z() {
             let mut rand = XorShift64::new();
             let d = 14;
-            for _ in 0..1000 {
+            for _ in 0..TEST_LOOP {
                 let zsize = 1 + rand.next_usize() % (d - 1);
                 let ysize = 1 + rand.next_usize() % (d - 1);
                 let xsize = 1 + rand.next_usize() % (d - 1);
@@ -3398,7 +3390,7 @@ mod occupancy {
         fn test_rot_y() {
             let mut rand = XorShift64::new();
             let d = 14;
-            for _ in 0..1000 {
+            for _ in 0..TEST_LOOP {
                 let zsize = 1 + rand.next_usize() % (d - 1);
                 let ysize = 1 + rand.next_usize() % (d - 1);
                 let xsize = 1 + rand.next_usize() % (d - 1);
@@ -3420,7 +3412,7 @@ mod occupancy {
         fn test_rot_x() {
             let mut rand = XorShift64::new();
             let d = 14;
-            for _ in 0..1000 {
+            for _ in 0..TEST_LOOP {
                 let zsize = 1 + rand.next_usize() % (d - 1);
                 let ysize = 1 + rand.next_usize() % (d - 1);
                 let xsize = 1 + rand.next_usize() % (d - 1);
@@ -3442,7 +3434,7 @@ mod occupancy {
         fn test_rot2() {
             let mut rand = XorShift64::new();
             let d = 14;
-            for _ in 0..1000 {
+            for _ in 0..TEST_LOOP {
                 let zsize = 1 + rand.next_usize() % (d - 1);
                 let ysize = 1 + rand.next_usize() % (d - 1);
                 let xsize = 1 + rand.next_usize() % (d - 1);
