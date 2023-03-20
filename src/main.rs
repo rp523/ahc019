@@ -3100,20 +3100,20 @@ use procon_reader::*;
 mod occupancy {
     use crate::ChangeMinMax;
     #[derive(Clone, Copy)]
-    struct OccuRange {
+    pub struct OccuRange {
         zrange: (usize, usize),
         yrange: (usize, usize),
         xrange: (usize, usize),
     }
     impl OccuRange {
-        fn new(z: usize, y: usize, x: usize) -> Self {
+        pub fn new(z: usize, y: usize, x: usize) -> Self {
             Self {
                 zrange: (z, z),
                 yrange: (y, y),
                 xrange: (x, x),
             }
         }
-        fn add(&self, z: usize, y: usize, x: usize) -> Self {
+        pub fn add(&self, z: usize, y: usize, x: usize) -> Self {
             let mut ret = *self;
             ret.zrange.0.chmin(z);
             ret.zrange.1.chmax(z);
@@ -3122,6 +3122,15 @@ mod occupancy {
             ret.xrange.0.chmin(x);
             ret.xrange.1.chmax(x);
             ret
+        }
+        pub fn zsize(&self) -> usize {
+            self.zrange.1 - self.zrange.0 + 1
+        }
+        pub fn ysize(&self) -> usize {
+            self.yrange.1 - self.yrange.0 + 1
+        }
+        pub fn xsize(&self) -> usize {
+            self.xrange.1 - self.xrange.0 + 1
         }
     }
     #[derive(Clone)]
@@ -3143,6 +3152,19 @@ mod occupancy {
                 field: vec![0; sz],
                 range: None,
             }
+        }
+        pub fn from(id_fields: &[Vec<Vec<usize>>], id_val: usize, range: &OccuRange) -> Self {
+            let mut ret = Self::new(range.zsize(), range.ysize(), range.xsize());
+            for (dz, sz) in (range.zrange.0..=range.zrange.1).enumerate() {
+                for (dy, sy) in (range.yrange.0..=range.yrange.1).enumerate() {
+                    for (dx, sx) in (range.xrange.0..=range.xrange.1).enumerate() {
+                        if id_fields[sz][sy][sx] == id_val {
+                            ret.set(dz, dy, dx);
+                        }
+                    }
+                }
+            }
+            ret
         }
         pub fn conv_3d_to_1d(&self, z: usize, y: usize, x: usize) -> usize {
             (z * self.ysize + y) * self.xsize + x
@@ -3405,6 +3427,8 @@ mod occupancy {
     }
 }
 mod state {
+    use crate::occupancy::{OccuRange, Occupancy};
+    use std::collections::HashMap;
     pub struct Silhouette {
         pub zx: Vec<Vec<bool>>,
         pub zy: Vec<Vec<bool>>,
@@ -3432,35 +3456,52 @@ mod state {
         }
     }
     pub struct State {
-        id_fields: Vec<Vec<Vec<usize>>>,
+        id_fields: Vec<Vec<Vec<Vec<usize>>>>,
     }
     impl State {
-        pub fn new(zx_silhouette: Vec<Vec<char>>, zy_silhouette: Vec<Vec<char>>) -> Self {
-            let d = zx_silhouette.len();
-            let mut id_fields = vec![vec![vec![0; d]; d]; d];
+        pub fn new(silhouettes: &[Silhouette], d: usize) -> Self {
+            let mut id_fields = vec![vec![vec![vec![0; d]; d]; d]; 2];
             let mut cnt = 0;
-            for z in 0..d {
-                for x in 0..d {
-                    if zx_silhouette[z][x] == '1' {
+            for (si, silhouette) in silhouettes.iter().enumerate() {
+                for z in 0..d {
+                    for x in (0..d).filter(|&x| silhouette.zx[z][x]) {
                         for y in 0..d {
                             cnt += 1;
-                            id_fields[z][y][x] = cnt;
+                            id_fields[si][z][y][x] = cnt;
                         }
                     }
-                }
-            }
-            let mut cnt = 0;
-            for z in 0..d {
-                for y in 0..d {
-                    if zy_silhouette[z][y] == '1' {
+                    for y in (0..d).filter(|&y| silhouette.zy[z][y]) {
                         for x in 0..d {
                             cnt += 1;
-                            id_fields[z][y][x] = cnt;
+                            id_fields[si][z][y][x] = cnt;
                         }
                     }
                 }
             }
             Self { id_fields }
+        }
+        pub fn occupancies(&self) -> Vec<Vec<Occupancy>> {
+            let mut ret: Vec<Vec<Occupancy>> = vec![];
+            for (si, id_box) in self.id_fields.iter().enumerate() {
+                let mut ranges: HashMap<usize, OccuRange> = HashMap::new();
+                for (z, id_plane) in id_box.iter().enumerate() {
+                    for (y, id_line) in id_plane.iter().enumerate() {
+                        for (x, &id_val) in id_line.iter().enumerate() {
+                            if let Some(range) = ranges.get_mut(&id_val) {
+                                range.add(z, y, x);
+                            } else {
+                                ranges.insert(id_val, OccuRange::new(z, y, x));
+                            }
+                        }
+                    }
+                }
+                let occus = ranges
+                    .into_iter()
+                    .map(|(id_val, range)| Occupancy::from(&self.id_fields[si], id_val, &range))
+                    .collect::<Vec<Occupancy>>();
+                ret.push(occus);
+            }
+            ret
         }
     }
 }
@@ -3495,7 +3536,7 @@ mod solver {
                 can_place,
             }
         }
-        pub fn solve(&mut self) {}
+        pub fn solve(&self) {}
     }
 }
 
