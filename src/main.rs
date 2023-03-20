@@ -3097,6 +3097,323 @@ use procon_reader::*;
 /*************************************************************************************
 *************************************************************************************/
 
-fn main() {
+mod occupancy {
+    use crate::ChangeMinMax;
+    #[derive(Clone, Copy)]
+    struct OccuRange {
+        zrange: (usize, usize),
+        yrange: (usize, usize),
+        xrange: (usize, usize),
+    }
+    impl OccuRange {
+        fn new(z: usize, y: usize, x: usize) -> Self {
+            Self {
+                zrange: (z, z),
+                yrange: (y, y),
+                xrange: (x, x),
+            }
+        }
+        fn add(&self, z: usize, y: usize, x: usize) -> Self {
+            let mut ret = *self;
+            ret.zrange.0.chmin(z);
+            ret.zrange.1.chmax(z);
+            ret.yrange.0.chmin(y);
+            ret.yrange.1.chmax(y);
+            ret.xrange.0.chmin(x);
+            ret.xrange.1.chmax(x);
+            ret
+        }
+    }
+    #[derive(Clone)]
+    pub struct Occupancy {
+        d: usize,
+        field: Vec<u64>,
+        range: Option<OccuRange>,
+    }
+    const BITWIDTH: usize = 64;
+    impl Occupancy {
+        pub fn new(d: usize) -> Self {
+            let sz = (d * d * d + BITWIDTH - 1) / BITWIDTH;
+            Self {
+                d,
+                field: vec![0; sz],
+                range: None,
+            }
+        }
+        pub fn conv_3d_to_1d(&self, z: usize, y: usize, x: usize) -> usize {
+            (z * self.d + y) * self.d + x
+        }
+        pub fn set(&mut self, z: usize, y: usize, x: usize) {
+            let idx = self.conv_3d_to_1d(z, y, x);
+            let div = idx / BITWIDTH;
+            let rem = idx % BITWIDTH;
+            self.field[div] |= 1 << rem;
+            if self.range.is_none() {
+                self.range = Some(OccuRange::new(z, y, x));
+            } else {
+                self.range = Some(self.range.unwrap().add(z, y, x));
+            }
+        }
+        pub fn get(&self, z: usize, y: usize, x: usize) -> bool {
+            let idx = self.conv_3d_to_1d(z, y, x);
+            let div = idx / BITWIDTH;
+            let rem = idx % BITWIDTH;
+            ((self.field[div] >> rem) & 1) != 0
+        }
+        fn align(&self) -> Self {
+            if let Some(range) = self.range {
+                if (range.zrange.0 == 0) && (range.yrange.0 == 0) && (range.xrange.0 == 0) {
+                    return self.clone();
+                }
+                let mut ret = Self::new(self.d);
+                for (dz, sz) in (range.zrange.0..=range.zrange.1).enumerate() {
+                    for (dy, sy) in (range.yrange.0..=range.yrange.1).enumerate() {
+                        for (dx, sx) in (range.xrange.0..=range.xrange.1).enumerate() {
+                            if self.get(sz, sy, sx) {
+                                ret.set(dz, dy, dx);
+                                if ret.range.is_none() {
+                                    ret.range = Some(OccuRange::new(dz, dy, dx));
+                                } else {
+                                    ret.range = Some(ret.range.unwrap().add(dz, dy, dx));
+                                }
+                            }
+                        }
+                    }
+                }
+                ret
+            } else {
+                Self::new(self.d)
+            }
+        }
+        fn rot_z(&mut self) {
+            self.rot_z_dir(true)
+        }
+        fn rot_z_dir(&mut self, dir: bool) {
+            let mut ret = Self::new(self.d);
+            if let Some(range) = self.range {
+                for (dz, sz) in (range.zrange.0..=range.zrange.1).enumerate() {
+                    for (dy0, sy) in (range.yrange.0..=range.yrange.1).enumerate() {
+                        let dx = if dir { range.yrange.1 - dy0 } else { dy0 };
+                        for (dx0, sx) in (range.xrange.0..=range.xrange.1).enumerate() {
+                            let dy = if dir { dx0 } else { range.xrange.1 - dx0 };
+                            if self.get(sz, sy, sx) {
+                                ret.set(dz, dy, dx);
+                                if ret.range.is_none() {
+                                    ret.range = Some(OccuRange::new(dz, dy, dx));
+                                } else {
+                                    ret.range = Some(ret.range.unwrap().add(dz, dy, dx));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            *self = ret;
+        }
+        fn rot_y(&mut self) {
+            self.rot_y_dir(true)
+        }
+        fn rot_y_dir(&mut self, dir: bool) {
+            let mut ret = Self::new(self.d);
+            if let Some(range) = self.range {
+                for (dz0, sz) in (range.zrange.0..=range.zrange.1).enumerate() {
+                    let dx = if dir { range.zrange.1 - dz0 } else { dz0 };
+                    for (dy, sy) in (range.yrange.0..=range.yrange.1).enumerate() {
+                        for (dx0, sx) in (range.xrange.0..=range.xrange.1).enumerate() {
+                            let dz = if dir { dx0 } else { range.xrange.1 - dx0 };
+                            if self.get(sz, sy, sx) {
+                                ret.set(dz, dy, dx);
+                                if ret.range.is_none() {
+                                    ret.range = Some(OccuRange::new(dz, dy, dx));
+                                } else {
+                                    ret.range = Some(ret.range.unwrap().add(dz, dy, dx));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            *self = ret;
+        }
+        fn rot_x(&mut self) {
+            self.rot_x_dir(true)
+        }
+        fn rot_x_dir(&mut self, dir: bool) {
+            let mut ret = Self::new(self.d);
+            if let Some(range) = self.range {
+                for (dz0, sz) in (range.zrange.0..=range.zrange.1).enumerate() {
+                    let dy = if dir { range.zrange.1 - dz0 } else { dz0 };
+                    for (dy0, sy) in (range.yrange.0..=range.yrange.1).enumerate() {
+                        let dz = if dir { dy0 } else { range.yrange.1 - dy0 };
+                        for (dx, sx) in (range.xrange.0..=range.xrange.1).enumerate() {
+                            if self.get(sz, sy, sx) {
+                                ret.set(dz, dy, dx);
+                                if ret.range.is_none() {
+                                    ret.range = Some(OccuRange::new(dz, dy, dx));
+                                } else {
+                                    ret.range = Some(ret.range.unwrap().add(dz, dy, dx));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            *self = ret;
+        }
+        fn rot_z_match(&self, other: &Self) -> bool {
+            let mut re = other.clone();
+            if self.complete_match(&re) {
+                return true;
+            }
+            for _ in 0..3 {
+                re.rot_z();
+                if self.complete_match(&re) {
+                    return true;
+                }
+            }
+            false
+        }
+        fn rot_match(&self, other: &Self) -> bool {
+            let mut re = other.clone();
+            if self.rot_z_match(&re) {
+                return true;
+            }
+            for dir in 0..5 {
+                if dir % 2 == 0 {
+                    re.rot_x();
+                } else {
+                    re.rot_y();
+                }
+                if self.rot_z_match(&re) {
+                    return true;
+                }
+            }
+            false
+        }
+        pub fn complete_match(&self, other: &Self) -> bool {
+            if let Some(lrange) = self.range {
+                if let Some(rrange) = other.range {
+                    if lrange.zrange.1 - lrange.zrange.0 != rrange.zrange.1 - rrange.zrange.0 {
+                        return false;
+                    }
+                    if lrange.yrange.1 - lrange.yrange.0 != rrange.yrange.1 - rrange.yrange.0 {
+                        return false;
+                    }
+                    if lrange.xrange.1 - lrange.xrange.0 != rrange.xrange.1 - rrange.xrange.0 {
+                        return false;
+                    }
+                    for lz in lrange.zrange.0..=lrange.zrange.1 {
+                        let rz = rrange.zrange.0 + lz - lrange.zrange.0;
+                        for ly in lrange.yrange.0..=lrange.yrange.1 {
+                            let ry = rrange.yrange.0 + ly - lrange.yrange.0;
+                            for lx in lrange.xrange.0..=lrange.xrange.1 {
+                                let rx = rrange.xrange.0 + lx - lrange.xrange.0;
+                                if self.get(lz, ly, lx) != other.get(rz, ry, rx) {
+                                    return false;
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    return false;
+                }
+            } else {
+                return other.range.is_none();
+            }
+            true
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use crate::XorShift64;
+        use super::Occupancy;
+        pub fn create_occ(d: usize, rand: &mut XorShift64) -> Occupancy {
+            let mut occ = Occupancy::new(d);
+            for z in 0..d {
+                for y in 0..d {
+                    for x in 0..d {
+                        if rand.next_usize() % 2 == 0 {
+                            occ.set(z, y, x);
+                        }
+                    }
+                }
+            }
+            occ
+        }
     
+        #[test]
+        fn test_rot1() {
+            let mut rand = XorShift64::new();
+            let d = 14;
+            for _ in 0..100 {
+                let occ = create_occ(d, &mut rand);
+                for c in 0..4 {
+                    let mut ref0 = occ.clone();
+                    let mut ref1 = occ.clone();
+                    for _ in 0..c {
+                        ref0.rot_z_dir(true);
+                    }
+                    for _ in 0..4 - c {
+                        ref1.rot_z_dir(false);
+                    }
+                    assert!(ref0.complete_match(&ref1));
+                }
+                for c in 0..4 {
+                    let mut ref0 = occ.clone();
+                    let mut ref1 = occ.clone();
+                    for _ in 0..c {
+                        ref0.rot_y_dir(true);
+                    }
+                    for _ in 0..4 - c {
+                        ref1.rot_y_dir(false);
+                    }
+                    assert!(ref0.complete_match(&ref1));
+                }
+                for c in 0..4 {
+                    let mut ref0 = occ.clone();
+                    let mut ref1 = occ.clone();
+                    for _ in 0..c {
+                        ref0.rot_x_dir(true);
+                    }
+                    for _ in 0..4 - c {
+                        ref1.rot_x_dir(false);
+                    }
+                    assert!(ref0.complete_match(&ref1));
+                }
+            }
+        }
+        #[test]
+        fn test_rot2() {
+            let mut rand = XorShift64::new();
+            let d = 14;
+            for _ in 0..200 {
+                let occ = create_occ(d, &mut rand);
+                let r = rand.next_u64() % 15 + 1;
+                let ref0 = occ.clone();
+                let mut ref1 = occ.clone();
+                for _ in 0..r {
+                    match rand.next_u64() % 3 {
+                        0 => {
+                            ref1.rot_z();
+                        }
+                        1 => {
+                            ref1.rot_y();
+                        }
+                        2 => {
+                            ref1.rot_x();
+                        }
+                        _ => unreachable!(),
+                    }
+                    assert!(ref0.rot_match(&ref1));
+                }
+            }
+        }
+    }    
+    impl PartialEq for Occupancy {
+        fn eq(&self, other: &Self) -> bool {
+            self.rot_match(other)
+        }
+    }
 }
+fn main() {}
