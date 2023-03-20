@@ -3126,22 +3126,26 @@ mod occupancy {
     }
     #[derive(Clone)]
     pub struct Occupancy {
-        d: usize,
+        zsize: usize,
+        ysize: usize,
+        xsize: usize,
         field: Vec<u64>,
         range: Option<OccuRange>,
     }
     const BITWIDTH: usize = 64;
     impl Occupancy {
-        pub fn new(d: usize) -> Self {
-            let sz = (d * d * d + BITWIDTH - 1) / BITWIDTH;
+        pub fn new(zsize: usize, ysize: usize, xsize: usize) -> Self {
+            let sz = (zsize * ysize * xsize + BITWIDTH - 1) / BITWIDTH;
             Self {
-                d,
+                zsize,
+                ysize,
+                xsize,
                 field: vec![0; sz],
                 range: None,
             }
         }
         pub fn conv_3d_to_1d(&self, z: usize, y: usize, x: usize) -> usize {
-            (z * self.d + y) * self.d + x
+            (z * self.ysize + y) * self.xsize + x
         }
         pub fn set(&mut self, z: usize, y: usize, x: usize) {
             let idx = self.conv_3d_to_1d(z, y, x);
@@ -3160,36 +3164,11 @@ mod occupancy {
             let rem = idx % BITWIDTH;
             ((self.field[div] >> rem) & 1) != 0
         }
-        fn align(&self) -> Self {
-            if let Some(range) = self.range {
-                if (range.zrange.0 == 0) && (range.yrange.0 == 0) && (range.xrange.0 == 0) {
-                    return self.clone();
-                }
-                let mut ret = Self::new(self.d);
-                for (dz, sz) in (range.zrange.0..=range.zrange.1).enumerate() {
-                    for (dy, sy) in (range.yrange.0..=range.yrange.1).enumerate() {
-                        for (dx, sx) in (range.xrange.0..=range.xrange.1).enumerate() {
-                            if self.get(sz, sy, sx) {
-                                ret.set(dz, dy, dx);
-                                if ret.range.is_none() {
-                                    ret.range = Some(OccuRange::new(dz, dy, dx));
-                                } else {
-                                    ret.range = Some(ret.range.unwrap().add(dz, dy, dx));
-                                }
-                            }
-                        }
-                    }
-                }
-                ret
-            } else {
-                Self::new(self.d)
-            }
-        }
         fn rot_z(&mut self) {
             self.rot_z_dir(true)
         }
         fn rot_z_dir(&mut self, dir: bool) {
-            let mut ret = Self::new(self.d);
+            let mut ret = Self::new(self.zsize, self.xsize, self.ysize);
             if let Some(range) = self.range {
                 for (dz, sz) in (range.zrange.0..=range.zrange.1).enumerate() {
                     for (dy0, sy) in (range.yrange.0..=range.yrange.1).enumerate() {
@@ -3214,7 +3193,7 @@ mod occupancy {
             self.rot_y_dir(true)
         }
         fn rot_y_dir(&mut self, dir: bool) {
-            let mut ret = Self::new(self.d);
+            let mut ret = Self::new(self.xsize, self.ysize, self.zsize);
             if let Some(range) = self.range {
                 for (dz0, sz) in (range.zrange.0..=range.zrange.1).enumerate() {
                     let dx = if dir { range.zrange.1 - dz0 } else { dz0 };
@@ -3239,7 +3218,7 @@ mod occupancy {
             self.rot_x_dir(true)
         }
         fn rot_x_dir(&mut self, dir: bool) {
-            let mut ret = Self::new(self.d);
+            let mut ret = Self::new(self.ysize, self.zsize, self.xsize);
             if let Some(range) = self.range {
                 for (dz0, sz) in (range.zrange.0..=range.zrange.1).enumerate() {
                     let dy = if dir { range.zrange.1 - dz0 } else { dz0 };
@@ -3328,11 +3307,11 @@ mod occupancy {
     mod tests {
         use crate::XorShift64;
         use super::Occupancy;
-        pub fn create_occ(d: usize, rand: &mut XorShift64) -> Occupancy {
-            let mut occ = Occupancy::new(d);
-            for z in 0..d {
-                for y in 0..d {
-                    for x in 0..d {
+        pub fn create_occ(zsize: usize, ysize: usize, xsize: usize, rand: &mut XorShift64) -> Occupancy {
+            let mut occ = Occupancy::new(zsize, ysize, xsize);
+            for z in 0..zsize {
+                for y in 0..ysize {
+                    for x in 0..xsize {
                         if rand.next_usize() % 2 == 0 {
                             occ.set(z, y, x);
                         }
@@ -3345,9 +3324,11 @@ mod occupancy {
         #[test]
         fn test_rot1() {
             let mut rand = XorShift64::new();
-            let d = 14;
-            for _ in 0..100 {
-                let occ = create_occ(d, &mut rand);
+            for _ in 0..1000 {
+                let zsize = 1 + rand.next_usize() % 15;
+                let ysize = 1 + rand.next_usize() % 15;
+                let xsize = 1 + rand.next_usize() % 15;
+                let occ = create_occ(zsize, ysize, xsize, &mut rand);
                 for c in 0..4 {
                     let mut ref0 = occ.clone();
                     let mut ref1 = occ.clone();
@@ -3386,9 +3367,11 @@ mod occupancy {
         #[test]
         fn test_rot2() {
             let mut rand = XorShift64::new();
-            let d = 14;
-            for _ in 0..200 {
-                let occ = create_occ(d, &mut rand);
+            for _ in 0..1000 {
+                let zsize = 1 + rand.next_usize() % 15;
+                let ysize = 1 + rand.next_usize() % 15;
+                let xsize = 1 + rand.next_usize() % 15;
+                let occ = create_occ(zsize, ysize, xsize, &mut rand);
                 let r = rand.next_u64() % 15 + 1;
                 let ref0 = occ.clone();
                 let mut ref1 = occ.clone();
