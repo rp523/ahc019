@@ -3506,8 +3506,11 @@ mod state {
     }
 }
 mod solver {
+    use crate::{MaxFlow};
+    use crate::occupancy::Occupancy;
     use crate::state::*;
     pub struct Solver {
+        d: usize,
         silhouettes: Vec<Silhouette>,
         can_place: Vec<Vec<Vec<Vec<bool>>>>,
     }
@@ -3532,11 +3535,44 @@ mod solver {
                 }
             }
             Self {
+                d,
                 silhouettes,
                 can_place,
             }
         }
-        pub fn solve(&self) {}
+        fn max_match(occus: &[Vec<Occupancy>]) {
+            let n0 = occus[0].len();
+            let n1 = occus[1].len();
+            let mut mf = MaxFlow::new(n0 + n1 + 2);
+            for (i0, o0) in occus[0].iter().enumerate() {
+                for (i1, o1) in occus[1].iter().enumerate() {
+                    if o0 != o1 {
+                        continue;
+                    }
+                    mf.add_edge(i0, n0 + i1, 1);
+                }                
+            }
+            for i0 in 0..occus[0].len() {
+                mf.add_edge(n0 + n1, i0, 1);
+            }            
+            for i1 in 0..occus[1].len() {
+                mf.add_edge(n0 + i1, n0 + n1 + 1, 1);
+            }
+            let _ = mf.max_flow(n0 + n1, n0 + n1 + 1);
+            for i0 in 0..occus[0].len() {
+                for e in mf.g[i0].iter() {
+                    if e.flow == 0 {
+                        continue;
+                    }
+                    let i1 = e.to;
+                }
+            }
+        }
+        pub fn solve(&self) {
+            let state = State::new(&self.silhouettes, self.d);
+            let occus = state.occupancies();
+            Self::max_match(&occus);
+        }
     }
 }
 
