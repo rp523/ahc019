@@ -3099,15 +3099,17 @@ use procon_reader::*;
 
 mod occupancy {
     use crate::ChangeMinMax;
-    #[derive(Clone, Copy)]
+    #[derive(Clone, Copy, PartialEq)]
     pub struct OccuRange {
+        d: usize,
         zrange: (usize, usize),
         yrange: (usize, usize),
         xrange: (usize, usize),
     }
     impl OccuRange {
-        pub fn new(z: usize, y: usize, x: usize) -> Self {
+        pub fn new(d: usize, z: usize, y: usize, x: usize) -> Self {
             Self {
+                d,
                 zrange: (z, z),
                 yrange: (y, y),
                 xrange: (x, x),
@@ -3132,56 +3134,60 @@ mod occupancy {
         pub fn xsize(&self) -> usize {
             self.xrange.1 - self.xrange.0 + 1
         }
+        pub fn volume(&self) -> usize {
+            self.zsize() * self.ysize() * self.xsize()
+        }
     }
     #[derive(Clone)]
     pub struct Occupancy {
-        zsize: usize,
-        ysize: usize,
-        xsize: usize,
         field: Vec<u64>,
-        range: Option<OccuRange>,
+        range: OccuRange,
     }
     const BITWIDTH: usize = 64;
     impl Occupancy {
-        pub fn new(zsize: usize, ysize: usize, xsize: usize) -> Self {
-            let sz = (zsize * ysize * xsize + BITWIDTH - 1) / BITWIDTH;
+        fn new_empty(range: OccuRange) -> Self {
+            let sz = (range.volume() + BITWIDTH - 1) / BITWIDTH;
             Self {
-                zsize,
-                ysize,
-                xsize,
                 field: vec![0; sz],
-                range: None,
+                range,
             }
         }
-        pub fn from(id_fields: &[Vec<Vec<usize>>], id_val: usize, range: &OccuRange) -> Self {
-            let mut ret = Self::new(range.zsize(), range.ysize(), range.xsize());
-            for (dz, sz) in (range.zrange.0..=range.zrange.1).enumerate() {
-                for (dy, sy) in (range.yrange.0..=range.yrange.1).enumerate() {
-                    for (dx, sx) in (range.xrange.0..=range.xrange.1).enumerate() {
+        pub fn new(id_fields: &[Vec<Vec<usize>>], id_val: usize, range: OccuRange) -> Self {
+            let mut ret = Self::new_empty(range);
+            for sz in range.zrange.0..=range.zrange.1 {
+                for sy in range.yrange.0..=range.yrange.1 {
+                    for sx in range.xrange.0..=range.xrange.1 {
                         if id_fields[sz][sy][sx] == id_val {
-                            ret.set(dz, dy, dx);
+                            ret.set(sz, sy, sx, true);
                         }
                     }
                 }
             }
             ret
         }
-        pub fn conv_3d_to_1d(&self, z: usize, y: usize, x: usize) -> usize {
-            (z * self.ysize + y) * self.xsize + x
+        pub fn conv_abs3d_to_rel1d(&self, z: usize, y: usize, x: usize) -> usize {
+            ((z - self.range.zrange.0) * self.range.ysize() + (y - self.range.yrange.0))
+                * self.range.xsize()
+                + (x - self.range.xrange.0)
         }
-        pub fn set(&mut self, z: usize, y: usize, x: usize) {
-            let idx = self.conv_3d_to_1d(z, y, x);
+        pub fn set(&mut self, z: usize, y: usize, x: usize, value: bool) {
+            debug_assert!(z >= self.range.zrange.0);
+            debug_assert!(z <= self.range.zrange.1);
+            debug_assert!(y >= self.range.yrange.0);
+            debug_assert!(y <= self.range.yrange.1);
+            debug_assert!(x >= self.range.xrange.0);
+            debug_assert!(x <= self.range.xrange.1);
+            let idx = self.conv_abs3d_to_rel1d(z, y, x);
             let div = idx / BITWIDTH;
             let rem = idx % BITWIDTH;
-            self.field[div] |= 1 << rem;
-            if self.range.is_none() {
-                self.range = Some(OccuRange::new(z, y, x));
+            if value {
+                self.field[div] |= 1 << rem;
             } else {
-                self.range = Some(self.range.unwrap().add(z, y, x));
+                self.field[div] &= !(1 << rem);
             }
         }
         pub fn get(&self, z: usize, y: usize, x: usize) -> bool {
-            let idx = self.conv_3d_to_1d(z, y, x);
+            let idx = self.conv_abs3d_to_rel1d(z, y, x);
             let div = idx / BITWIDTH;
             let rem = idx % BITWIDTH;
             ((self.field[div] >> rem) & 1) != 0
@@ -3190,21 +3196,34 @@ mod occupancy {
             self.rot_z_dir(true)
         }
         fn rot_z_dir(&mut self, dir: bool) {
-            let mut ret = Self::new(self.zsize, self.xsize, self.ysize);
-            if let Some(range) = self.range {
-                for (dz, sz) in (range.zrange.0..=range.zrange.1).enumerate() {
-                    for (dy0, sy) in (range.yrange.0..=range.yrange.1).enumerate() {
-                        let dx = if dir { range.yrange.1 - dy0 } else { dy0 };
-                        for (dx0, sx) in (range.xrange.0..=range.xrange.1).enumerate() {
-                            let dy = if dir { dx0 } else { range.xrange.1 - dx0 };
-                            if self.get(sz, sy, sx) {
-                                ret.set(dz, dy, dx);
-                                if ret.range.is_none() {
-                                    ret.range = Some(OccuRange::new(dz, dy, dx));
-                                } else {
-                                    ret.range = Some(ret.range.unwrap().add(dz, dy, dx));
-                                }
-                            }
+            let mut range = self.range;
+            std::mem::swap(&mut range.yrange, &mut range.xrange);
+            if dir {
+                std::mem::swap(&mut range.xrange.0, &mut range.xrange.1);
+                range.xrange.0 = range.d - 1 - range.xrange.0;
+                range.xrange.1 = range.d - 1 - range.xrange.1;
+            } else {
+                std::mem::swap(&mut range.yrange.0, &mut range.yrange.1);
+                range.yrange.0 = range.d - 1 - range.yrange.0;
+                range.yrange.1 = range.d - 1 - range.yrange.1;
+            }
+            let mut ret = Self::new_empty(range);
+            for z0 in self.range.zrange.0..=self.range.zrange.1 {
+                let z1 = ret.range.zrange.0 + (z0 - self.range.zrange.0);
+                for y0 in self.range.yrange.0..=self.range.yrange.1 {
+                    let x1 = if dir {
+                        self.range.d - 1 - y0
+                    } else {
+                        y0
+                    };
+                    for x0 in self.range.xrange.0..=self.range.xrange.1 {
+                        let y1 = if dir {
+                            x0
+                        } else {
+                            self.range.d - 1 - x0
+                        };
+                        if self.get(z0, y0, x0) {
+                            ret.set(z1, y1, x1, true);
                         }
                     }
                 }
@@ -3215,21 +3234,34 @@ mod occupancy {
             self.rot_y_dir(true)
         }
         fn rot_y_dir(&mut self, dir: bool) {
-            let mut ret = Self::new(self.xsize, self.ysize, self.zsize);
-            if let Some(range) = self.range {
-                for (dz0, sz) in (range.zrange.0..=range.zrange.1).enumerate() {
-                    let dx = if dir { range.zrange.1 - dz0 } else { dz0 };
-                    for (dy, sy) in (range.yrange.0..=range.yrange.1).enumerate() {
-                        for (dx0, sx) in (range.xrange.0..=range.xrange.1).enumerate() {
-                            let dz = if dir { dx0 } else { range.xrange.1 - dx0 };
-                            if self.get(sz, sy, sx) {
-                                ret.set(dz, dy, dx);
-                                if ret.range.is_none() {
-                                    ret.range = Some(OccuRange::new(dz, dy, dx));
-                                } else {
-                                    ret.range = Some(ret.range.unwrap().add(dz, dy, dx));
-                                }
-                            }
+            let mut range = self.range;
+            std::mem::swap(&mut range.zrange, &mut range.xrange);
+            if dir {
+                std::mem::swap(&mut range.xrange.0, &mut range.xrange.1);
+                range.xrange.0 = range.d - 1 - range.xrange.0;
+                range.xrange.1 = range.d - 1 - range.xrange.1;
+            } else {
+                std::mem::swap(&mut range.zrange.0, &mut range.zrange.1);
+                range.zrange.0 = range.d - 1 - range.zrange.0;
+                range.zrange.1 = range.d - 1 - range.zrange.1;
+            }
+            let mut ret = Self::new_empty(range);
+            for z0 in self.range.zrange.0..=self.range.zrange.1 {
+                let x1 = if dir {
+                    self.range.d - 1 - z0
+                } else {
+                    z0
+                };
+                for y0 in self.range.yrange.0..=self.range.yrange.1 {
+                    let y1 = ret.range.yrange.0 + (y0 - self.range.yrange.0);
+                    for x0 in self.range.xrange.0..=self.range.xrange.1 {
+                        let z1 = if dir {
+                            x0
+                        } else {
+                            self.range.d - 1 - x0
+                        };
+                        if self.get(z0, y0, x0) {
+                            ret.set(z1, y1, x1, true);
                         }
                     }
                 }
@@ -3240,21 +3272,34 @@ mod occupancy {
             self.rot_x_dir(true)
         }
         fn rot_x_dir(&mut self, dir: bool) {
-            let mut ret = Self::new(self.ysize, self.zsize, self.xsize);
-            if let Some(range) = self.range {
-                for (dz0, sz) in (range.zrange.0..=range.zrange.1).enumerate() {
-                    let dy = if dir { range.zrange.1 - dz0 } else { dz0 };
-                    for (dy0, sy) in (range.yrange.0..=range.yrange.1).enumerate() {
-                        let dz = if dir { dy0 } else { range.yrange.1 - dy0 };
-                        for (dx, sx) in (range.xrange.0..=range.xrange.1).enumerate() {
-                            if self.get(sz, sy, sx) {
-                                ret.set(dz, dy, dx);
-                                if ret.range.is_none() {
-                                    ret.range = Some(OccuRange::new(dz, dy, dx));
-                                } else {
-                                    ret.range = Some(ret.range.unwrap().add(dz, dy, dx));
-                                }
-                            }
+            let mut range = self.range;
+            std::mem::swap(&mut range.zrange, &mut range.yrange);
+            if dir {
+                std::mem::swap(&mut range.yrange.0, &mut range.yrange.1);
+                range.yrange.0 = range.d - 1 - range.yrange.0;
+                range.yrange.1 = range.d - 1 - range.yrange.1;
+            } else {
+                std::mem::swap(&mut range.zrange.0, &mut range.zrange.1);
+                range.zrange.0 = range.d - 1 - range.zrange.0;
+                range.zrange.1 = range.d - 1 - range.zrange.1;
+            }
+            let mut ret = Self::new_empty(range);
+            for z0 in self.range.zrange.0..=self.range.zrange.1 {
+                let y1 = if dir {
+                    self.range.d - 1 - z0
+                } else {
+                    z0
+                };
+                for y0 in self.range.yrange.0..=self.range.yrange.1 {
+                    let z1 = if dir {
+                        y0
+                    } else {
+                        self.range.d - 1 - y0
+                    };
+                    for x0 in self.range.xrange.0..=self.range.xrange.1 {
+                        let x1 = ret.range.xrange.0 + (x0 - self.range.xrange.0);
+                        if self.get(z0, y0, x0) {
+                            ret.set(z1, y1, x1, true);
                         }
                     }
                 }
@@ -3292,34 +3337,11 @@ mod occupancy {
             false
         }
         pub fn complete_match(&self, other: &Self) -> bool {
-            if let Some(lrange) = self.range {
-                if let Some(rrange) = other.range {
-                    if lrange.zrange.1 - lrange.zrange.0 != rrange.zrange.1 - rrange.zrange.0 {
-                        return false;
-                    }
-                    if lrange.yrange.1 - lrange.yrange.0 != rrange.yrange.1 - rrange.yrange.0 {
-                        return false;
-                    }
-                    if lrange.xrange.1 - lrange.xrange.0 != rrange.xrange.1 - rrange.xrange.0 {
-                        return false;
-                    }
-                    for lz in lrange.zrange.0..=lrange.zrange.1 {
-                        let rz = rrange.zrange.0 + lz - lrange.zrange.0;
-                        for ly in lrange.yrange.0..=lrange.yrange.1 {
-                            let ry = rrange.yrange.0 + ly - lrange.yrange.0;
-                            for lx in lrange.xrange.0..=lrange.xrange.1 {
-                                let rx = rrange.xrange.0 + lx - lrange.xrange.0;
-                                if self.get(lz, ly, lx) != other.get(rz, ry, rx) {
-                                    return false;
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    return false;
-                }
-            } else {
-                return other.range.is_none();
+            if self.range != other.range {
+                return false;
+            }
+            if self.field != other.field {
+                return false;
             }
             true
         }
@@ -3327,20 +3349,22 @@ mod occupancy {
 
     #[cfg(test)]
     mod tests {
-        use super::Occupancy;
+        use super::{OccuRange, Occupancy};
         use crate::XorShift64;
         pub fn create_occ(
+            d: usize,
             zsize: usize,
             ysize: usize,
             xsize: usize,
             rand: &mut XorShift64,
         ) -> Occupancy {
-            let mut occ = Occupancy::new(zsize, ysize, xsize);
-            for z in 0..zsize {
-                for y in 0..ysize {
-                    for x in 0..xsize {
+            let range = OccuRange::new(d, zsize, ysize, xsize);
+            let mut occ = Occupancy::new_empty(range);
+            for z in range.zrange.0..=range.zrange.1 {
+                for y in range.yrange.0..=range.yrange.1 {
+                    for x in range.xrange.0..=range.xrange.1 {
                         if rand.next_usize() % 2 == 0 {
-                            occ.set(z, y, x);
+                            occ.set(z, y, x, true);
                         }
                     }
                 }
@@ -3349,13 +3373,14 @@ mod occupancy {
         }
 
         #[test]
-        fn test_rot1() {
+        fn test_rot_z() {
             let mut rand = XorShift64::new();
+            let d = 14;
             for _ in 0..1000 {
-                let zsize = 1 + rand.next_usize() % 15;
-                let ysize = 1 + rand.next_usize() % 15;
-                let xsize = 1 + rand.next_usize() % 15;
-                let occ = create_occ(zsize, ysize, xsize, &mut rand);
+                let zsize = 1 + rand.next_usize() % (d - 1);
+                let ysize = 1 + rand.next_usize() % (d - 1);
+                let xsize = 1 + rand.next_usize() % (d - 1);
+                let occ = create_occ(d, zsize, ysize, xsize, &mut rand);
                 for c in 0..4 {
                     let mut ref0 = occ.clone();
                     let mut ref1 = occ.clone();
@@ -3367,6 +3392,17 @@ mod occupancy {
                     }
                     assert!(ref0.complete_match(&ref1));
                 }
+            }
+        }
+        #[test]
+        fn test_rot_y() {
+            let mut rand = XorShift64::new();
+            let d = 14;
+            for _ in 0..1000 {
+                let zsize = 1 + rand.next_usize() % (d - 1);
+                let ysize = 1 + rand.next_usize() % (d - 1);
+                let xsize = 1 + rand.next_usize() % (d - 1);
+                let occ = create_occ(d, zsize, ysize, xsize, &mut rand);
                 for c in 0..4 {
                     let mut ref0 = occ.clone();
                     let mut ref1 = occ.clone();
@@ -3378,6 +3414,17 @@ mod occupancy {
                     }
                     assert!(ref0.complete_match(&ref1));
                 }
+            }
+        }
+        #[test]
+        fn test_rot_x() {
+            let mut rand = XorShift64::new();
+            let d = 14;
+            for _ in 0..1000 {
+                let zsize = 1 + rand.next_usize() % (d - 1);
+                let ysize = 1 + rand.next_usize() % (d - 1);
+                let xsize = 1 + rand.next_usize() % (d - 1);
+                let occ = create_occ(d, zsize, ysize, xsize, &mut rand);
                 for c in 0..4 {
                     let mut ref0 = occ.clone();
                     let mut ref1 = occ.clone();
@@ -3394,11 +3441,12 @@ mod occupancy {
         #[test]
         fn test_rot2() {
             let mut rand = XorShift64::new();
+            let d = 14;
             for _ in 0..1000 {
-                let zsize = 1 + rand.next_usize() % 15;
-                let ysize = 1 + rand.next_usize() % 15;
-                let xsize = 1 + rand.next_usize() % 15;
-                let occ = create_occ(zsize, ysize, xsize, &mut rand);
+                let zsize = 1 + rand.next_usize() % (d - 1);
+                let ysize = 1 + rand.next_usize() % (d - 1);
+                let xsize = 1 + rand.next_usize() % (d - 1);
+                let occ = create_occ(d, zsize, ysize, xsize, &mut rand);
                 let r = rand.next_u64() % 15 + 1;
                 let ref0 = occ.clone();
                 let mut ref1 = occ.clone();
@@ -3481,6 +3529,7 @@ mod state {
             Self { id_fields }
         }
         pub fn occupancies(&self) -> Vec<Vec<Occupancy>> {
+            let d = self.id_fields[0].len();
             let mut ret: Vec<Vec<Occupancy>> = vec![];
             for (si, id_box) in self.id_fields.iter().enumerate() {
                 let mut ranges: HashMap<usize, OccuRange> = HashMap::new();
@@ -3490,14 +3539,14 @@ mod state {
                             if let Some(range) = ranges.get_mut(&id_val) {
                                 range.add(z, y, x);
                             } else {
-                                ranges.insert(id_val, OccuRange::new(z, y, x));
+                                ranges.insert(id_val, OccuRange::new(d, z, y, x));
                             }
                         }
                     }
                 }
                 let occus = ranges
                     .into_iter()
-                    .map(|(id_val, range)| Occupancy::from(&self.id_fields[si], id_val, &range))
+                    .map(|(id_val, range)| Occupancy::new(&self.id_fields[si], id_val, range))
                     .collect::<Vec<Occupancy>>();
                 ret.push(occus);
             }
@@ -3506,9 +3555,9 @@ mod state {
     }
 }
 mod solver {
-    use crate::{MaxFlow};
     use crate::occupancy::Occupancy;
     use crate::state::*;
+    use crate::MaxFlow;
     pub struct Solver {
         d: usize,
         silhouettes: Vec<Silhouette>,
@@ -3550,11 +3599,11 @@ mod solver {
                         continue;
                     }
                     mf.add_edge(i0, n0 + i1, 1);
-                }                
+                }
             }
             for i0 in 0..occus[0].len() {
                 mf.add_edge(n0 + n1, i0, 1);
-            }            
+            }
             for i1 in 0..occus[1].len() {
                 mf.add_edge(n0 + i1, n0 + n1 + 1, 1);
             }
