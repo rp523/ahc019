@@ -3305,9 +3305,14 @@ mod occupancy {
 
     #[cfg(test)]
     mod tests {
-        use crate::XorShift64;
         use super::Occupancy;
-        pub fn create_occ(zsize: usize, ysize: usize, xsize: usize, rand: &mut XorShift64) -> Occupancy {
+        use crate::XorShift64;
+        pub fn create_occ(
+            zsize: usize,
+            ysize: usize,
+            xsize: usize,
+            rand: &mut XorShift64,
+        ) -> Occupancy {
             let mut occ = Occupancy::new(zsize, ysize, xsize);
             for z in 0..zsize {
                 for y in 0..ysize {
@@ -3320,7 +3325,7 @@ mod occupancy {
             }
             occ
         }
-    
+
         #[test]
         fn test_rot1() {
             let mut rand = XorShift64::new();
@@ -3392,11 +3397,108 @@ mod occupancy {
                 }
             }
         }
-    }    
+    }
     impl PartialEq for Occupancy {
         fn eq(&self, other: &Self) -> bool {
             self.rot_match(other)
         }
     }
 }
-fn main() {}
+mod state {
+    pub struct Silhouette {
+        pub zx: Vec<Vec<bool>>,
+        pub zy: Vec<Vec<bool>>,
+    }
+    impl Silhouette {
+        pub fn new(d: usize) -> Self {
+            use crate::procon_reader::*;
+            let zx = (0..d)
+                .map(|_| {
+                    read::<String>()
+                        .chars()
+                        .map(|c| c == '1')
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>();
+            let zy = (0..d)
+                .map(|_| {
+                    read::<String>()
+                        .chars()
+                        .map(|c| c == '1')
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>();
+            Self { zx, zy }
+        }
+    }
+    pub struct State {
+        id_fields: Vec<Vec<Vec<usize>>>,
+    }
+    impl State {
+        pub fn new(zx_silhouette: Vec<Vec<char>>, zy_silhouette: Vec<Vec<char>>) -> Self {
+            let d = zx_silhouette.len();
+            let mut id_fields = vec![vec![vec![0; d]; d]; d];
+            let mut cnt = 0;
+            for z in 0..d {
+                for x in 0..d {
+                    if zx_silhouette[z][x] == '1' {
+                        for y in 0..d {
+                            cnt += 1;
+                            id_fields[z][y][x] = cnt;
+                        }
+                    }
+                }
+            }
+            let mut cnt = 0;
+            for z in 0..d {
+                for y in 0..d {
+                    if zy_silhouette[z][y] == '1' {
+                        for x in 0..d {
+                            cnt += 1;
+                            id_fields[z][y][x] = cnt;
+                        }
+                    }
+                }
+            }
+            Self { id_fields }
+        }
+    }
+}
+mod solver {
+    use crate::state::*;
+    pub struct Solver {
+        silhouettes: Vec<Silhouette>,
+        can_place: Vec<Vec<Vec<Vec<bool>>>>,
+    }
+    impl Solver {
+        pub fn new() -> Self {
+            use crate::procon_reader::*;
+            let d = read::<usize>();
+            let silhouettes = (0..2).map(|_| Silhouette::new(d)).collect::<Vec<_>>();
+            let mut can_place = vec![vec![vec![vec![true; d]; d]; d]; 2];
+            for (si, silhouette) in silhouettes.iter().enumerate() {
+                for z in 0..d {
+                    for x in (0..d).filter(|&x| !silhouette.zx[z][x]) {
+                        for y in 0..d {
+                            can_place[si][z][y][x] = false;
+                        }
+                    }
+                    for y in (0..d).filter(|&y| !silhouette.zy[z][y]) {
+                        for x in 0..d {
+                            can_place[si][z][y][x] = false;
+                        }
+                    }
+                }
+            }
+            Self {
+                silhouettes,
+                can_place,
+            }
+        }
+        pub fn solve(&mut self) {}
+    }
+}
+
+fn main() {
+    solver::Solver::new().solve();
+}
