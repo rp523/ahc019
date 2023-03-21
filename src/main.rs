@@ -3099,6 +3099,7 @@ use procon_reader::*;
 
 mod occupancy {
     use crate::ChangeMinMax;
+    use std::ops::RangeInclusive;
     #[derive(Clone, Copy, PartialEq)]
     pub struct OccuRange {
         d: usize,
@@ -3124,6 +3125,15 @@ mod occupancy {
             ret.xrange.0.chmin(x);
             ret.xrange.1.chmax(x);
             ret
+        }
+        pub fn zrange(&self) -> RangeInclusive<usize> {
+            self.zrange.0..=self.zrange.1
+        }
+        pub fn yrange(&self) -> RangeInclusive<usize> {
+            self.yrange.0..=self.yrange.1
+        }
+        pub fn xrange(&self) -> RangeInclusive<usize> {
+            self.xrange.0..=self.xrange.1
         }
         pub fn zsize(&self) -> usize {
             self.zrange.1 - self.zrange.0 + 1
@@ -3154,33 +3164,22 @@ mod occupancy {
         }
         pub fn new(id_fields: &[Vec<Vec<usize>>], target_id: usize, range: OccuRange) -> Self {
             let mut ret = Self::new_empty(range);
-            for (sz, id_plane) in id_fields
-                .iter()
-                .enumerate()
-                .take(range.zrange.1 + 1)
-                .skip(range.zrange.0)
-            {
-                for (sy, id_line) in id_plane
-                    .iter()
-                    .enumerate()
-                    .take(range.yrange.1 + 1)
-                    .skip(range.yrange.0)
-                {
-                    for (sx, &id_value) in id_line
-                        .iter()
-                        .enumerate()
-                        .take(range.xrange.1 + 1)
-                        .skip(range.xrange.0)
-                    {
+            for z in range.zrange() {
+                for y in range.yrange() {
+                    for x in range.xrange() {
+                        let id_value = id_fields[z][y][x];
                         if id_value == target_id {
-                            ret.set(sz, sy, sx, true);
+                            ret.set(z, y, x, true);
                         }
                     }
                 }
             }
             ret
         }
-        pub fn conv_abs3d_to_rel1d(&self, z: usize, y: usize, x: usize) -> usize {
+        pub fn get_range(&self) -> &OccuRange {
+            &self.range
+        }
+        fn conv_abs3d_to_rel1d(&self, z: usize, y: usize, x: usize) -> usize {
             ((z - self.range.zrange.0) * self.range.ysize() + (y - self.range.yrange.0))
                 * self.range.xsize()
                 + (x - self.range.xrange.0)
@@ -3328,7 +3327,13 @@ mod occupancy {
             false
         }
         pub fn complete_match(&self, other: &Self) -> bool {
-            if self.range != other.range {
+            if self.range.zsize() != other.range.zsize() {
+                return false;
+            }
+            if self.range.ysize() != other.range.xsize() {
+                return false;
+            }
+            if self.range.ysize() != other.range.xsize() {
                 return false;
             }
             if self.field != other.field {
@@ -3468,7 +3473,18 @@ mod occupancy {
                 }
             }
         }
-    }
+        #[test]
+        fn test_volume1() {
+            let d = 5;
+            let or0 = OccuRange::new(d, 0, 0, 0);
+            let or1 = OccuRange::new(d, 1, 1, 1);
+            let mut o0 = Occupancy::new_empty(or0);
+            let mut o1 = Occupancy::new_empty(or1);
+            o0.set(0, 0, 0, true);
+            o1.set(1, 1, 1, true);
+            assert!(o0 == o1);
+        }
+}
     impl PartialEq for Occupancy {
         fn eq(&self, other: &Self) -> bool {
             self.rot_match(other)
@@ -3477,7 +3493,7 @@ mod occupancy {
 }
 mod state {
     use crate::occupancy::{OccuRange, Occupancy};
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     pub struct Silhouette {
         pub zx: Vec<Vec<bool>>,
         pub zy: Vec<Vec<bool>>,
@@ -3513,14 +3529,8 @@ mod state {
             let mut cnt = 0;
             for (si, silhouette) in silhouettes.iter().enumerate() {
                 for z in 0..d {
-                    for x in (0..d).filter(|&x| silhouette.zx[z][x]) {
-                        for y in 0..d {
-                            cnt += 1;
-                            id_fields[si][z][y][x] = cnt;
-                        }
-                    }
                     for y in (0..d).filter(|&y| silhouette.zy[z][y]) {
-                        for x in 0..d {
+                        for x in (0..d).filter(|&x| silhouette.zx[z][x]) {
                             cnt += 1;
                             id_fields[si][z][y][x] = cnt;
                         }
@@ -3533,12 +3543,15 @@ mod state {
             let d = self.id_fields[0].len();
             let mut ret: Vec<Vec<Occupancy>> = vec![];
             for (si, id_box) in self.id_fields.iter().enumerate() {
-                let mut ranges: HashMap<usize, OccuRange> = HashMap::new();
+                let mut ranges: HashMap<usize, OccuRange>= HashMap::new();
                 for (z, id_plane) in id_box.iter().enumerate() {
                     for (y, id_line) in id_plane.iter().enumerate() {
                         for (x, &id_val) in id_line.iter().enumerate() {
+                            if id_val == 0 {
+                                continue;
+                            }
                             if let Some(range) = ranges.get_mut(&id_val) {
-                                range.add(z, y, x);
+                                *range = range.add(z, y, x);
                             } else {
                                 ranges.insert(id_val, OccuRange::new(d, z, y, x));
                             }
@@ -3563,32 +3576,15 @@ mod solver {
     pub struct Solver {
         d: usize,
         silhouettes: Vec<Silhouette>,
-        can_place: Vec<Vec<Vec<Vec<bool>>>>,
     }
     impl Solver {
         pub fn new() -> Self {
             use crate::procon_reader::*;
             let d = read::<usize>();
             let silhouettes = (0..2).map(|_| Silhouette::new(d)).collect::<Vec<_>>();
-            let mut can_place = vec![vec![vec![vec![true; d]; d]; d]; 2];
-            for (si, silhouette) in silhouettes.iter().enumerate() {
-                for z in 0..d {
-                    for x in (0..d).filter(|&x| !silhouette.zx[z][x]) {
-                        for y in 0..d {
-                            can_place[si][z][y][x] = false;
-                        }
-                    }
-                    for y in (0..d).filter(|&y| !silhouette.zy[z][y]) {
-                        for x in 0..d {
-                            can_place[si][z][y][x] = false;
-                        }
-                    }
-                }
-            }
             Self {
                 d,
                 silhouettes,
-                can_place,
             }
         }
         fn max_match(occus: &[Vec<Occupancy>], d: usize) -> (Vec<Vec<Vec<Vec<usize>>>>, usize){
@@ -3609,7 +3605,7 @@ mod solver {
             for i1 in 0..occus[1].len() {
                 mf.add_edge(n0 + i1, n0 + n1 + 1, 1);
             }
-            let _ = mf.max_flow(n0 + n1, n0 + n1 + 1);
+            let _f = mf.max_flow(n0 + n1, n0 + n1 + 1);
             let mut id_cnt = 0;
             let mut id_field = vec![vec![vec![vec![0; d]; d]; d]; 2];
             for (i0, o0) in occus[0].iter().enumerate() {
@@ -3676,9 +3672,9 @@ mod solver {
             let occus = state.occupancies();
             let (mut id_field, id_cnt) = Self::max_match(&occus, self.d);
             self.remove(&mut id_field);
-            Self::output(id_field);
+            self.output(id_field);
         }
-        fn output(id_field: Vec<Vec<Vec<Vec<usize>>>>) {
+        fn output(&self, id_field: Vec<Vec<Vec<Vec<usize>>>>) {
             let mut st = BTreeMap::new();
             st.insert(0, 0);
             for bx in id_field.iter() {
@@ -3693,11 +3689,12 @@ mod solver {
             for (i, (_, v)) in st.iter_mut().enumerate() {
                 *v = i;
             }
-            println!("{}", st.len());
-            for id_field in id_field {
-                for plane in id_field {
-                    for line in plane {
-                        for val in line {
+            println!("{}", st.len() - 1);
+            for id_box in id_field {
+                for x in 0..self.d {
+                    for y in 0..self.d {
+                        for z in 0..self.d {
+                            let val = id_box[z][y][x];
                             print!("{} ", st[&val]);
                         }
                     }
