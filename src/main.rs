@@ -3340,12 +3340,12 @@ mod occupancy {
             true
         }
         pub fn write_id(&self, id_field: &mut [Vec<Vec<usize>>], target_id: usize) {
-            for id_plane in id_field.iter_mut().take(self.range.zrange.1 + 1).skip(self.range.zrange.0) {
-                for id_line in id_plane.iter_mut().take(self.range.yrange.1 + 1).skip(self.range.yrange.0) {
-                    for id_value in id_line.iter_mut().take(self.range.xrange.1 + 1).skip(self.range.xrange.0) {
-                        *id_value = target_id;
+            for z in self.range.zrange() {
+                for y in self.range.yrange() {
+                    for x in self.range.xrange() {
+                        id_field[z][y][x] = target_id;
                     }
-                }                
+                }
             }
         }
     }
@@ -3482,7 +3482,7 @@ mod occupancy {
             o1.set(1, 1, 1, true);
             assert!(o0 == o1);
         }
-}
+    }
     impl PartialEq for Occupancy {
         fn eq(&self, other: &Self) -> bool {
             self.rot_match(other)
@@ -3541,7 +3541,7 @@ mod state {
             let d = self.id_fields[0].len();
             let mut ret: Vec<Vec<Occupancy>> = vec![];
             for (si, id_box) in self.id_fields.iter().enumerate() {
-                let mut ranges: BTreeMap<usize, OccuRange>= BTreeMap::new();
+                let mut ranges: BTreeMap<usize, OccuRange> = BTreeMap::new();
                 for (z, id_plane) in id_box.iter().enumerate() {
                     for (y, id_line) in id_plane.iter().enumerate() {
                         for (x, &id_val) in id_line.iter().enumerate() {
@@ -3592,10 +3592,7 @@ mod solver {
 
             let d = read::<usize>();
             let silhouettes = (0..2).map(|_| Silhouette::new(d)).collect::<Vec<_>>();
-            Self {
-                d,
-                silhouettes,
-            }
+            Self { d, silhouettes }
         }
         fn max_match(occus: &[Vec<Occupancy>], d: usize) -> Vec<Vec<Vec<Vec<usize>>>> {
             let n0 = occus[0].len();
@@ -3655,7 +3652,12 @@ mod solver {
                 for z in 0..self.d {
                     for y in (0..self.d).filter(|&y| silhouette.zx[z][y]) {
                         for x in (0..self.d).filter(|&x| silhouette.zx[z][x]) {
-                            fn zx_any(id_box: &[Vec<Vec<usize>>], sz: usize, sy: usize, sx: usize) -> bool {
+                            fn zx_any(
+                                id_box: &[Vec<Vec<usize>>],
+                                sz: usize,
+                                sy: usize,
+                                sx: usize,
+                            ) -> bool {
                                 let d = id_box.len();
                                 for ay in 0..d {
                                     if ay == sy {
@@ -3667,7 +3669,12 @@ mod solver {
                                 }
                                 false
                             }
-                            fn zy_any(id_box: &[Vec<Vec<usize>>], sz: usize, sy: usize, sx: usize) -> bool {
+                            fn zy_any(
+                                id_box: &[Vec<Vec<usize>>],
+                                sz: usize,
+                                sy: usize,
+                                sx: usize,
+                            ) -> bool {
                                 let d = id_box.len();
                                 for ax in 0..d {
                                     if ax == sx {
@@ -3695,7 +3702,7 @@ mod solver {
             self.output(id_field);
         }
         fn output(&self, id_field: Vec<Vec<Vec<Vec<usize>>>>) {
-            if unsafe {!EVAL} {
+            if unsafe { !EVAL } {
                 let mut st = BTreeMap::new();
                 st.insert(0, 0);
                 for bx in id_field.iter() {
