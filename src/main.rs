@@ -3116,15 +3116,13 @@ mod occupancy {
                 xrange: (x, x),
             }
         }
-        pub fn add(&self, z: usize, y: usize, x: usize) -> Self {
-            let mut ret = *self;
-            ret.zrange.0.chmin(z);
-            ret.zrange.1.chmax(z);
-            ret.yrange.0.chmin(y);
-            ret.yrange.1.chmax(y);
-            ret.xrange.0.chmin(x);
-            ret.xrange.1.chmax(x);
-            ret
+        pub fn expand(&mut self, z: usize, y: usize, x: usize) {
+            self.zrange.0.chmin(z);
+            self.zrange.1.chmax(z);
+            self.yrange.0.chmin(y);
+            self.yrange.1.chmax(y);
+            self.xrange.0.chmin(x);
+            self.xrange.1.chmax(x);
         }
         pub fn zrange(&self) -> RangeInclusive<usize> {
             self.zrange.0..=self.zrange.1
@@ -3551,7 +3549,7 @@ mod state {
                                 continue;
                             }
                             if let Some(range) = ranges.get_mut(&id_val) {
-                                *range = range.add(z, y, x);
+                                range.expand(z, y, x);
                             } else {
                                 ranges.insert(id_val, OccuRange::new(d, z, y, x));
                             }
@@ -3569,10 +3567,11 @@ mod state {
     }
 }
 mod solver {
+    static mut EVAL: bool = false;
     use crate::occupancy::Occupancy;
     use crate::state::*;
     use crate::MaxFlow;
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, HashMap, HashSet};
     pub struct Solver {
         d: usize,
         silhouettes: Vec<Silhouette>,
@@ -3580,6 +3579,17 @@ mod solver {
     impl Solver {
         pub fn new() -> Self {
             use crate::procon_reader::*;
+
+            let mut args = std::env::args().collect::<Vec<String>>();
+            args.remove(0);
+            for arg in args {
+                if arg == "eval" {
+                    unsafe {
+                        EVAL = true;
+                    }
+                }
+            }
+
             let d = read::<usize>();
             let silhouettes = (0..2).map(|_| Silhouette::new(d)).collect::<Vec<_>>();
             Self {
@@ -3685,31 +3695,101 @@ mod solver {
             self.output(id_field);
         }
         fn output(&self, id_field: Vec<Vec<Vec<Vec<usize>>>>) {
-            let mut st = BTreeMap::new();
-            st.insert(0, 0);
-            for bx in id_field.iter() {
-                for plane in bx.iter() {
-                    for line in plane.iter() {
-                        for &val in line.iter() {
-                            st.insert(val, 0);
+            if unsafe {!EVAL} {
+                let mut st = BTreeMap::new();
+                st.insert(0, 0);
+                for bx in id_field.iter() {
+                    for plane in bx.iter() {
+                        for line in plane.iter() {
+                            for &val in line.iter() {
+                                st.insert(val, 0);
+                            }
                         }
                     }
                 }
-            }
-            for (i, (_, v)) in st.iter_mut().enumerate() {
-                *v = i;
-            }
-            println!("{}", st.len() - 1);
-            for id_box in id_field {
-                for x in 0..self.d {
-                    for y in 0..self.d {
-                        for plane in id_box.iter() {
-                            let val = plane[y][x];
-                            print!("{} ", st[&val]);
+                for (i, (_, v)) in st.iter_mut().enumerate() {
+                    *v = i;
+                }
+                println!("{}", st.len() - 1);
+                for id_box in &id_field {
+                    for x in 0..self.d {
+                        for y in 0..self.d {
+                            for plane in id_box.iter() {
+                                let val = plane[y][x];
+                                print!("{} ", st[&val]);
+                            }
+                        }
+                    }
+                    println!();
+                }
+            } else {
+                let mut cnt_2d = vec![vec![vec![vec![0; self.d]; self.d]; self.d]; 2];
+                for (id_box, cnt) in id_field.iter().zip(cnt_2d.iter_mut()) {
+                    for (id_plane, cnt) in id_box.iter().zip(cnt.iter_mut()) {
+                        for (id_line, cnt) in id_plane.iter().zip(cnt.iter_mut()) {
+                            for (&id_val, cnt) in id_line.iter().zip(cnt.iter_mut()) {
+                                if id_val > 0 {
+                                    *cnt += 1;
+                                }
+                            }
                         }
                     }
                 }
-                println!();
+                for (silhouette, cnt) in self.silhouettes.iter().zip(cnt_2d.iter()) {
+                    for (z, cnt) in cnt.iter().enumerate() {
+                        for (y, cnt) in cnt.iter().enumerate() {
+                            let sm = cnt.iter().sum::<usize>();
+                            if silhouette.zy[z][y] {
+                                assert!(sm > 0);
+                            } else {
+                                assert!(sm == 0);
+                            }
+                        }
+                        for x in 0..self.d {
+                            let sm = (0..self.d).map(|y| cnt[y][x]).sum::<usize>();
+                            if silhouette.zx[z][x] {
+                                assert!(sm > 0);
+                            } else {
+                                assert!(sm == 0);
+                            }
+                        }
+                    }
+                }
+
+                let mut cnt = vec![HashMap::new(); 2];
+                for (cnt, id_box) in cnt.iter_mut().zip(id_field.iter()) {
+                    for id_plane in id_box {
+                        for id_line in id_plane {
+                            for &id_val in id_line {
+                                *cnt.entry(id_val).or_insert(0) += 1;
+                            }
+                        }
+                    }
+                }
+                let mut score = 0.0;
+                let mut isos = vec![HashSet::new(); 2];
+                for (&id0, &v) in cnt[0].iter() {
+                    if !cnt[1].contains_key(&id0) {
+                        score += v as f64;
+                        isos[0].insert(id0);
+                    }
+                }
+                for (&id1, &v) in cnt[1].iter() {
+                    if !cnt[0].contains_key(&id1) {
+                        score += v as f64;
+                        isos[1].insert(id1);
+                    }
+                }
+                for (cnt, iso) in cnt.iter_mut().zip(isos.iter()) {
+                    for iso in iso.iter() {
+                        cnt.remove(iso);
+                    }
+                }
+                for (_, &v) in cnt[0].iter() {
+                    score += 1.0 / v as f64;
+                }
+                let score = f64::round(score * 1e9) as usize;
+                println!("{}", score);
             }
         }
     }
