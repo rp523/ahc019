@@ -3222,11 +3222,11 @@ mod occupancy {
                 range.yrange.1 = range.d - 1 - range.yrange.1;
             }
             let mut ret = Self::new_empty(range);
-            for z0 in self.range.zrange.0..=self.range.zrange.1 {
+            for z0 in self.range.zrange() {
                 let z1 = ret.range.zrange.0 + (z0 - self.range.zrange.0);
-                for y0 in self.range.yrange.0..=self.range.yrange.1 {
+                for y0 in self.range.yrange() {
                     let x1 = if dir { self.range.d - 1 - y0 } else { y0 };
-                    for x0 in self.range.xrange.0..=self.range.xrange.1 {
+                    for x0 in self.range.xrange() {
                         let y1 = if dir { x0 } else { self.range.d - 1 - x0 };
                         if self.get(z0, y0, x0) {
                             ret.set(z1, y1, x1, true);
@@ -3252,11 +3252,11 @@ mod occupancy {
                 range.zrange.1 = range.d - 1 - range.zrange.1;
             }
             let mut ret = Self::new_empty(range);
-            for z0 in self.range.zrange.0..=self.range.zrange.1 {
+            for z0 in self.range.zrange() {
                 let x1 = if dir { self.range.d - 1 - z0 } else { z0 };
-                for y0 in self.range.yrange.0..=self.range.yrange.1 {
+                for y0 in self.range.yrange() {
                     let y1 = ret.range.yrange.0 + (y0 - self.range.yrange.0);
-                    for x0 in self.range.xrange.0..=self.range.xrange.1 {
+                    for x0 in self.range.xrange() {
                         let z1 = if dir { x0 } else { self.range.d - 1 - x0 };
                         if self.get(z0, y0, x0) {
                             ret.set(z1, y1, x1, true);
@@ -3282,11 +3282,11 @@ mod occupancy {
                 range.zrange.1 = range.d - 1 - range.zrange.1;
             }
             let mut ret = Self::new_empty(range);
-            for z0 in self.range.zrange.0..=self.range.zrange.1 {
+            for z0 in self.range.zrange() {
                 let y1 = if dir { self.range.d - 1 - z0 } else { z0 };
-                for y0 in self.range.yrange.0..=self.range.yrange.1 {
+                for y0 in self.range.yrange() {
                     let z1 = if dir { y0 } else { self.range.d - 1 - y0 };
-                    for x0 in self.range.xrange.0..=self.range.xrange.1 {
+                    for x0 in self.range.xrange() {
                         let x1 = ret.range.xrange.0 + (x0 - self.range.xrange.0);
                         if self.get(z0, y0, x0) {
                             ret.set(z1, y1, x1, true);
@@ -3493,7 +3493,7 @@ mod occupancy {
 }
 mod state {
     use crate::occupancy::{OccuRange, Occupancy};
-    use std::collections::{HashMap, HashSet};
+    use std::collections::{BTreeMap, HashMap, HashSet};
     pub struct Silhouette {
         pub zx: Vec<Vec<bool>>,
         pub zy: Vec<Vec<bool>>,
@@ -3543,7 +3543,7 @@ mod state {
             let d = self.id_fields[0].len();
             let mut ret: Vec<Vec<Occupancy>> = vec![];
             for (si, id_box) in self.id_fields.iter().enumerate() {
-                let mut ranges: HashMap<usize, OccuRange>= HashMap::new();
+                let mut ranges: BTreeMap<usize, OccuRange>= BTreeMap::new();
                 for (z, id_plane) in id_box.iter().enumerate() {
                     for (y, id_line) in id_plane.iter().enumerate() {
                         for (x, &id_val) in id_line.iter().enumerate() {
@@ -3587,7 +3587,7 @@ mod solver {
                 silhouettes,
             }
         }
-        fn max_match(occus: &[Vec<Occupancy>], d: usize) -> (Vec<Vec<Vec<Vec<usize>>>>, usize){
+        fn max_match(occus: &[Vec<Occupancy>], d: usize) -> Vec<Vec<Vec<Vec<usize>>>> {
             let n0 = occus[0].len();
             let n1 = occus[1].len();
             let mut mf = MaxFlow::new(n0 + n1 + 2);
@@ -3606,61 +3606,71 @@ mod solver {
                 mf.add_edge(n0 + i1, n0 + n1 + 1, 1);
             }
             let _f = mf.max_flow(n0 + n1, n0 + n1 + 1);
-            let mut id_cnt = 0;
             let mut id_field = vec![vec![vec![vec![0; d]; d]; d]; 2];
-            for (i0, o0) in occus[0].iter().enumerate() {
+            for (si, (id_box, occus)) in id_field.iter_mut().zip(occus.iter()).enumerate() {
+                for (i, occ) in occus.iter().enumerate() {
+                    let id_val = i + n0 * si + 1;
+                    for z in occ.get_range().zrange() {
+                        for y in occ.get_range().yrange() {
+                            for x in occ.get_range().xrange() {
+                                if occ.get(z, y, x) {
+                                    id_box[z][y][x] = id_val;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            for (i0, _o0) in occus[0].iter().enumerate() {
+                let id0_val = i0 + 1;
                 for e in mf.g[i0].iter() {
                     if e.flow == 0 {
                         continue;
                     }
-                    id_cnt += 1;
                     let i1 = e.to;
-                    if (i1 < n0) || (i1 >= n0 + n1) {
+                    if !((n0 <= i1) && (i1 < n0 + n1)) {
                         continue;
                     }
                     let i1 = i1 - n0;
                     let o1 = &occus[1][i1];
-                    o0.write_id(&mut id_field[0], id_cnt);
-                    o1.write_id(&mut id_field[1], id_cnt);
+                    o1.write_id(&mut id_field[1], id0_val);
                 }
             }
-            (id_field, id_cnt)
+            id_field
         }
         fn remove(&self, id_field: &mut [Vec<Vec<Vec<usize>>>]) {
             // 専有ブロックごとに判定、優先度をつけて
-            for (id_field, silhouette) in id_field.iter_mut().zip(self.silhouettes.iter()) {
+            for (id_box, silhouette) in id_field.iter_mut().zip(self.silhouettes.iter()) {
                 for z in 0..self.d {
-                    for y in 0..self.d {
-                        for x in 0..self.d {
-                            if !silhouette.zx[z][x] || !silhouette.zy[z][y] {
-                                continue;
-                            }
-                            fn zx_any(id_field: &[Vec<Vec<usize>>], z: usize, x: usize, remove_y: usize) -> bool {
-                                let d = id_field.len();
-                                for y in 0..d {
-                                    if y == remove_y {
+                    for y in (0..self.d).filter(|&y| silhouette.zx[z][y]) {
+                        for x in (0..self.d).filter(|&x| silhouette.zx[z][x]) {
+                            fn zx_any(id_box: &[Vec<Vec<usize>>], sz: usize, sy: usize, sx: usize) -> bool {
+                                let d = id_box.len();
+                                for ay in 0..d {
+                                    if ay == sy {
                                         continue;
                                     }
-                                    if id_field[z][y][x] > 0 {
+                                    if id_box[sz][ay][sx] > 0 {
                                         return true;
                                     }
                                 }
                                 false
                             }
-                            fn zy_any(id_field: &[Vec<Vec<usize>>], z: usize, y: usize, remove_x: usize) -> bool {
-                                let d = id_field.len();
-                                for x in 0..d {
-                                    if x == remove_x {
+                            fn zy_any(id_box: &[Vec<Vec<usize>>], sz: usize, sy: usize, sx: usize) -> bool {
+                                let d = id_box.len();
+                                for ax in 0..d {
+                                    if ax == sx {
                                         continue;
                                     }
-                                    if id_field[z][y][x] > 0 {
+                                    if id_box[sz][sy][ax] > 0 {
                                         return true;
                                     }
                                 }
                                 false
                             }
-                            if zx_any(id_field, z, x, y) && zy_any(id_field, z, y, x) {
-                                id_field[z][y][x] = 0;
+                            if zx_any(id_box, z, y, x) && zy_any(id_box, z, y, x) {
+                                id_box[z][y][x] = 0;
                             }
                         }
                     }
@@ -3670,7 +3680,7 @@ mod solver {
         pub fn solve(&self) {
             let state = State::new(&self.silhouettes, self.d);
             let occus = state.occupancies();
-            let (mut id_field, id_cnt) = Self::max_match(&occus, self.d);
+            let mut id_field = Self::max_match(&occus, self.d);
             self.remove(&mut id_field);
             self.output(id_field);
         }
@@ -3693,8 +3703,8 @@ mod solver {
             for id_box in id_field {
                 for x in 0..self.d {
                     for y in 0..self.d {
-                        for z in 0..self.d {
-                            let val = id_box[z][y][x];
+                        for plane in id_box.iter() {
+                            let val = plane[y][x];
                             print!("{} ", st[&val]);
                         }
                     }
