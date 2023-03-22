@@ -3621,10 +3621,9 @@ mod state {
                     }
                 }
                 let mut id_set = HashMap::new();
-                for z in 0..d {
-                    for y in (0..d).filter(|&y| silhouette.zy[z][y]) {
-                        for x in (0..d).filter(|&x| silhouette.zx[z][x]) {
-                            let id_val = id_box[z][y][x];
+                for (z, id_plane) in id_box.iter().enumerate() {
+                    for (y, id_line) in id_plane.iter().enumerate().filter(|(y, _id_line)| silhouette.zy[z][*y]) {
+                        for (x, &id_val) in id_line.iter().enumerate().filter(|(x, _id_val)| silhouette.zx[z][*x]) {
                             if id_val > 0 {
                                 id_set.entry(id_val).or_insert(vec![]).push((z, y, x));
                             }
@@ -3700,6 +3699,7 @@ mod solver {
             let silhouettes = (0..2).map(|_| Silhouette::new(d)).collect::<Vec<_>>();
             Self { d, silhouettes }
         }
+        #[allow(clippy::type_complexity)]
         fn max_match(
             occs: &[Vec<Occupancy>],
             d: usize,
@@ -3974,21 +3974,21 @@ mod solver {
                         }
                     }
                 }
-                for z in 0..self.d {
-                    for y in 0..self.d {
-                        if silhouette.zy[z][y] {
-                            debug_assert!(zy_cnt[z][y] > 0);
+                for (sil_plane, cnt_plane) in silhouette.zy.iter().zip(zy_cnt.iter()) {
+                    for (&sil, &cnt) in sil_plane.iter().zip(cnt_plane.iter()) {
+                        if sil {
+                            debug_assert!(cnt > 0);
                         } else {
-                            debug_assert!(zy_cnt[z][y] == 0);
+                            debug_assert!(cnt == 0);
                         }
                     }
                 }
-                for z in 0..self.d {
-                    for x in 0..self.d {
-                        if silhouette.zx[z][x] {
-                            debug_assert!(zx_cnt[z][x] > 0);
+                for (sil_plane, cnt_plane) in silhouette.zx.iter().zip(zx_cnt.iter()) {
+                    for (&sil, &cnt) in sil_plane.iter().zip(cnt_plane.iter()) {
+                        if sil {
+                            debug_assert!(cnt > 0);
                         } else {
-                            debug_assert!(zx_cnt[z][x] == 0);
+                            debug_assert!(cnt == 0);
                         }
                     }
                 }
