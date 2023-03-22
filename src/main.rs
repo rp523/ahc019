@@ -3281,6 +3281,9 @@ mod occupancy {
         ) -> std::iter::Map<std::slice::Iter<'_, u32>, fn(&u32) -> (usize, usize, usize)> {
             self.points.iter_map()
         }
+        pub fn eff_size(&self) -> usize {
+            self.points.len()
+        }
         pub fn get(&self, z: usize, y: usize, x: usize) -> bool {
             let idx = self.conv_abs3d_to_rel1d(z, y, x);
             let div = idx / BITWIDTH;
@@ -3441,16 +3444,6 @@ mod occupancy {
         }
     }
     impl Eq for Occupancy {}
-    impl PartialOrd for Occupancy {
-        fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-            self.points.len().partial_cmp(&other.points.len())
-        }
-    }
-    impl Ord for Occupancy {
-        fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-            self.partial_cmp(other).unwrap()
-        }
-    }
     impl std::ops::Add<Self> for Occupancy {
         type Output = Self;
         fn add(self, rhs: Self) -> Self::Output {
@@ -3967,7 +3960,7 @@ mod solver {
                     }
                     unmatches.push(oi);
                 }
-                unmatches.sort_by(|&i, &j| occs[i].cmp(&occs[j]));
+                unmatches.sort_by(|&i, &j| occs[i].eff_size().cmp(&occs[j].eff_size()));
                 for oi in unmatches {
                     let occ = &occs[oi];
                     if Self::can_delete(silhouette, id_box, occ) {
@@ -3982,7 +3975,7 @@ mod solver {
             for (&oi0, &oi1) in matches[0].iter() {
                 match_pairs.push((oi0, oi1));
             }
-            match_pairs.sort_by(|p0, p1| occs[0][p0.0].cmp(&occs[0][p1.0]));
+            match_pairs.sort_by(|p0, p1| occs[0][p0.0].eff_size().cmp(&occs[0][p1.0].eff_size()));
             for (oi0, oi1) in match_pairs {
                 if !Self::can_delete(&self.silhouettes[0], &id_field[0], &occs[0][oi0]) {
                     continue;
