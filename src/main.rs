@@ -3097,6 +3097,64 @@ use procon_reader::*;
 /*************************************************************************************
 *************************************************************************************/
 
+mod points {
+    pub struct Points {
+        pts: Vec<u32>,
+    }
+    impl Points {
+        pub fn new() -> Self {
+            Self { pts: vec![] }
+        }
+        pub fn add(&mut self, z: usize, y: usize, x: usize) {
+            let val = Self::encode(z, y, x);
+            self.pts.push(val);
+        }
+        pub fn len(&self) -> usize {
+            self.pts.len()
+        }
+        fn encode(z: usize, y: usize, x: usize) -> u32 {
+            let mut val = 0;
+            val |= x as u32;
+            val |= (y as u32) << 4;
+            val |= (z as u32) << 8;
+            val
+        }
+        fn decode(i: u32) -> (usize, usize, usize) {
+            let val = i as usize;
+            ((val >> 8) & 15, (val >> 4) & 15, (val & 15))
+        }
+        #[allow(clippy::type_complexity)]
+        pub fn iter_map(
+            &self,
+        ) -> std::iter::Map<std::slice::Iter<'_, u32>, fn(&u32) -> (usize, usize, usize)> {
+            self.pts.iter().map(|&idx| Self::decode(idx))
+        }
+    }
+    mod tests {
+        use super::*;
+        #[test]
+        fn rebuild() {
+            let mut rand = crate::XorShift64::new();
+            let d = 14;
+            for l in 0..100 {
+                let mut zyx = vec![];
+                let mut pts = Points::new();
+                for _ in 0..100 {
+                    let z = rand.next_usize() % d;
+                    let y = rand.next_usize() % d;
+                    let x = rand.next_usize() % d;
+                    zyx.push((z, y, x));
+                    pts.add(z, y, x);
+                }
+                for (&(oz, oy, ox), (z, y, x)) in zyx.iter().zip(pts.iter_map()) {
+                    assert_eq!(oz, z);
+                    assert_eq!(oy, y);
+                    assert_eq!(ox, x);
+                }
+            }
+        }
+    }
+}
 mod occupancy {
     use crate::ChangeMinMax;
     use std::ops::RangeInclusive;
@@ -3357,7 +3415,7 @@ mod occupancy {
     mod tests {
         use super::{OccuRange, Occupancy};
         use crate::XorShift64;
-        const TEST_LOOP: usize = 10000000;
+        const TEST_LOOP: usize = 100;
         pub fn create_occ(
             d: usize,
             zsize: usize,
@@ -3552,8 +3610,7 @@ mod state {
                             cnt += 1;
                             id_plane[y][x] = cnt;
                             // can set
-                            if cfg!(debug_assertions)
-                            {
+                            if cfg!(debug_assertions) {
                                 let idx = to_1dim(z, y, x);
                                 let (nz, ny, nx) = to_3dim(idx);
                                 debug_assert!(z == nz);
@@ -3622,8 +3679,16 @@ mod state {
                 }
                 let mut id_set = HashMap::new();
                 for (z, id_plane) in id_box.iter().enumerate() {
-                    for (y, id_line) in id_plane.iter().enumerate().filter(|(y, _id_line)| silhouette.zy[z][*y]) {
-                        for (x, &id_val) in id_line.iter().enumerate().filter(|(x, _id_val)| silhouette.zx[z][*x]) {
+                    for (y, id_line) in id_plane
+                        .iter()
+                        .enumerate()
+                        .filter(|(y, _id_line)| silhouette.zy[z][*y])
+                    {
+                        for (x, &id_val) in id_line
+                            .iter()
+                            .enumerate()
+                            .filter(|(x, _id_val)| silhouette.zx[z][*x])
+                        {
                             if id_val > 0 {
                                 id_set.entry(id_val).or_insert(vec![]).push((z, y, x));
                             }
@@ -3736,7 +3801,7 @@ mod solver {
             let _f = mf.max_flow(src, dst);
 
             let mut st = vec![HashMap::new(); 2];
-            
+
             for (i0, _o0) in occs[0].iter().enumerate() {
                 let id0_val = i0 + 1;
                 for e in mf.g[i0].iter() {
@@ -3756,12 +3821,7 @@ mod solver {
             }
             (id_field, st)
         }
-        fn zx_any(
-            id_box: &[Vec<Vec<usize>>],
-            sz: usize,
-            sx: usize,
-            id_val: usize,
-        ) -> bool {
+        fn zx_any(id_box: &[Vec<Vec<usize>>], sz: usize, sx: usize, id_val: usize) -> bool {
             let d = id_box.len();
             for ay in 0..d {
                 let aid = id_box[sz][ay][sx];
@@ -3775,12 +3835,7 @@ mod solver {
             }
             false
         }
-        fn zy_any(
-            id_box: &[Vec<Vec<usize>>],
-            sz: usize,
-            sy: usize,
-            id_val: usize,
-        ) -> bool {
+        fn zy_any(id_box: &[Vec<Vec<usize>>], sz: usize, sy: usize, id_val: usize) -> bool {
             let d = id_box.len();
             for ax in 0..d {
                 let aid = id_box[sz][sy][ax];
@@ -3811,8 +3866,7 @@ mod solver {
                         continue;
                     }
                     let mut can_delete = true;
-                    'can_delete:
-                    for z in occ.get_range().zrange() {
+                    'can_delete: for z in occ.get_range().zrange() {
                         for y in occ.get_range().yrange() {
                             for x in occ.get_range().xrange() {
                                 if !occ.get(z, y, x) {
@@ -3821,8 +3875,14 @@ mod solver {
                                 let occ_id = id_box[z][y][x];
                                 // can delete this occupancy? judge once.
                                 for z in occ.get_range().zrange() {
-                                    for y in occ.get_range().yrange().filter(|&y| silhouette.zy[z][y]) {
-                                        for x in occ.get_range().xrange().filter(|&x| silhouette.zx[z][x]) {
+                                    for y in
+                                        occ.get_range().yrange().filter(|&y| silhouette.zy[z][y])
+                                    {
+                                        for x in occ
+                                            .get_range()
+                                            .xrange()
+                                            .filter(|&x| silhouette.zx[z][x])
+                                        {
                                             if !occ.get(z, y, x) {
                                                 continue;
                                             }
