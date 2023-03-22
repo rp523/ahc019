@@ -3869,8 +3869,8 @@ mod solver {
         fn remove_useless(
             &self,
             id_field: &mut [Vec<Vec<Vec<usize>>>],
-            occs: &[Vec<Occupancy>],
-            matches: &[HashMap<usize, usize>],
+            occs: Vec<Vec<Occupancy>>,
+            matches: Vec<HashMap<usize, usize>>,
         ) {
             // delete isolated box, if possible.
             for ((id_box, occs), (matches, silhouette)) in id_field
@@ -3878,61 +3878,62 @@ mod solver {
                 .zip(occs.iter())
                 .zip(matches.iter().zip(self.silhouettes.iter()))
             {
-                for (oi, occ) in occs.iter().enumerate() {
+                let mut unmatches = vec![];
+                for (oi, _occ) in occs.iter().enumerate() {
                     if matches.contains_key(&oi) {
                         continue;
                     }
-                    let mut can_delete = true;
-                    'can_delete: for z in occ.get_range().zrange() {
-                        for y in occ.get_range().yrange() {
-                            for x in occ.get_range().xrange() {
-                                if !occ.get(z, y, x) {
-                                    continue;
-                                }
-                                let occ_id = id_box[z][y][x];
-                                // can delete this occupancy? judge once.
-                                for z in occ.get_range().zrange() {
-                                    for y in
-                                        occ.get_range().yrange().filter(|&y| silhouette.zy[z][y])
-                                    {
-                                        for x in occ
-                                            .get_range()
-                                            .xrange()
-                                            .filter(|&x| silhouette.zx[z][x])
-                                        {
-                                            if !occ.get(z, y, x) {
-                                                continue;
-                                            }
-                                            // occupates, and needed.
-                                            if !Self::zy_any(id_box, z, y, occ_id) {
-                                                can_delete = false;
-                                                break 'can_delete;
-                                            }
-                                            if !Self::zx_any(id_box, z, x, occ_id) {
-                                                can_delete = false;
-                                                break 'can_delete;
-                                            }
-                                        }
-                                    }
-                                }
-                                break 'can_delete;
-                            }
-                        }
-                    }
-                    if can_delete {
-                        for z in occ.get_range().zrange() {
-                            for y in occ.get_range().yrange().filter(|&y| silhouette.zy[z][y]) {
-                                for x in occ.get_range().xrange().filter(|&x| silhouette.zx[z][x]) {
-                                    if !occ.get(z, y, x) {
-                                        continue;
-                                    }
-                                    id_box[z][y][x] = 0;
-                                }
-                            }
+                    unmatches.push(oi);
+                }
+                unmatches.sort_by(|&i, &j| occs[i].cmp(&occs[j]));
+                for oi in unmatches {
+                    let occ = &occs[oi];
+                    if Self::can_delete(silhouette, id_box, occ) {
+                        for (z, y, x) in occ.points() {
+                            id_box[z][y][x] = 0;
                         }
                     }
                 }
             }
+
+            let mut match_pairs = vec![];
+            for (&oi0, &oi1) in matches[0].iter() {
+                match_pairs.push((oi0, oi1));
+            }
+            match_pairs.sort_by(|p0, p1| occs[0][p0.0].cmp(&occs[0][p1.0]));
+            for (oi0, oi1) in match_pairs {
+                if !Self::can_delete(&self.silhouettes[0], &id_field[0], &occs[0][oi0]) {
+                    continue;
+                }
+                if !Self::can_delete(&self.silhouettes[1], &id_field[1], &occs[1][oi1]) {
+                    continue;
+                }
+                for (z, y, x) in occs[0][oi0].points() {
+                    id_field[0][z][y][x] = 0;
+                }
+                for (z, y, x) in occs[1][oi1].points() {
+                    id_field[1][z][y][x] = 0;
+                }
+            }
+        }
+        fn can_delete(
+            silhouette: &Silhouette,
+            id_box: &[Vec<Vec<usize>>],
+            occ: &Occupancy,
+        ) -> bool {
+            for (z, y, x) in occ.points() {
+                let occ_id = id_box[z][y][x];
+                if silhouette.zy[z][y] && silhouette.zx[z][x] {
+                    // occupates, and needed.
+                    if !Self::zy_any(id_box, z, y, occ_id) {
+                        return false;
+                    }
+                    if !Self::zx_any(id_box, z, x, occ_id) {
+                        return false;
+                    }
+                }
+            }
+            true
         }
         fn output(&self, id_field: Vec<Vec<Vec<Vec<usize>>>>) {
             if unsafe { !EVAL } {
@@ -4117,7 +4118,7 @@ mod solver {
             self.debug_occupancies(&occs);
             let (mut id_field, matches) = Self::max_match(&occs, self.d);
             self.debug_id_field(&id_field);
-            self.remove_useless(&mut id_field, &occs, &matches);
+            self.remove_useless(&mut id_field, occs, matches);
             self.output(id_field);
         }
     }
