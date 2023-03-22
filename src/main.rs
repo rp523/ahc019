@@ -3205,6 +3205,22 @@ mod occupancy {
             self.zsize() * self.ysize() * self.xsize()
         }
     }
+    impl std::ops::Add<Self> for OccuRange {
+        type Output = Self;
+        fn add(self, rhs: Self) -> Self::Output {
+            let mut ret = self;
+            ret.expand(rhs.zrange.0, rhs.yrange.0, rhs.xrange.0);
+            ret.expand(rhs.zrange.0, rhs.yrange.0, rhs.xrange.1);
+            ret.expand(rhs.zrange.0, rhs.yrange.1, rhs.xrange.0);
+            ret.expand(rhs.zrange.0, rhs.yrange.1, rhs.xrange.1);
+            ret.expand(rhs.zrange.1, rhs.yrange.0, rhs.xrange.0);
+            ret.expand(rhs.zrange.1, rhs.yrange.0, rhs.xrange.1);
+            ret.expand(rhs.zrange.1, rhs.yrange.1, rhs.xrange.0);
+            ret.expand(rhs.zrange.1, rhs.yrange.1, rhs.xrange.1);
+            ret
+        }
+    }
+
     #[derive(Clone)]
     pub struct Occupancy {
         field: Vec<u64>,
@@ -3432,13 +3448,24 @@ mod occupancy {
             self.partial_cmp(other).unwrap()
         }
     }
+    impl std::ops::Add<Self> for Occupancy {
+        type Output = Self;
+        fn add(self, rhs: Self) -> Self::Output {
+            let range = self.range + rhs.range;
+            let mut ret = Self::new_empty(range);
+            for (z, y, x) in self.points().chain(rhs.points()) {
+                ret.set(z, y, x);
+            }
+            ret
+        }
+    }
 
     #[cfg(test)]
     mod tests {
         use super::{OccuRange, Occupancy};
         use crate::XorShift64;
         const TEST_LOOP: usize = 100;
-        pub fn create_occ(
+        fn create_occ(
             d: usize,
             zsize: usize,
             ysize: usize,
@@ -3458,7 +3485,6 @@ mod occupancy {
             }
             occ
         }
-
         #[test]
         fn test_rot_z() {
             let mut rand = XorShift64::new();
