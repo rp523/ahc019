@@ -3097,11 +3097,12 @@ use procon_reader::*;
 /*************************************************************************************
 *************************************************************************************/
 
-mod points {
-    pub struct Points {
+mod comp_points {
+    #[derive(Clone)]
+    pub struct CompPoints {
         pts: Vec<u32>,
     }
-    impl Points {
+    impl CompPoints {
         pub fn new() -> Self {
             Self { pts: vec![] }
         }
@@ -3156,7 +3157,7 @@ mod points {
     }
 }
 mod occupancy {
-    use crate::ChangeMinMax;
+    use crate::{comp_points::CompPoints, ChangeMinMax};
     use std::ops::RangeInclusive;
     #[derive(Clone, Copy, PartialEq)]
     pub struct OccuRange {
@@ -3208,6 +3209,7 @@ mod occupancy {
     pub struct Occupancy {
         field: Vec<u64>,
         range: OccuRange,
+        points: CompPoints,
     }
     const BITWIDTH: usize = 64;
     impl Occupancy {
@@ -3216,6 +3218,7 @@ mod occupancy {
             Self {
                 field: vec![0; sz],
                 range,
+                points: CompPoints::new(),
             }
         }
         pub fn new(id_fields: &[Vec<Vec<usize>>], target_id: usize, range: OccuRange) -> Self {
@@ -3225,7 +3228,7 @@ mod occupancy {
                     for x in range.xrange() {
                         let id_value = id_fields[z][y][x];
                         if id_value == target_id {
-                            ret.set(z, y, x, true);
+                            ret.set(z, y, x);
                         }
                     }
                 }
@@ -3240,7 +3243,7 @@ mod occupancy {
                 * self.range.xsize()
                 + (x - self.range.xrange.0)
         }
-        pub fn set(&mut self, z: usize, y: usize, x: usize, value: bool) {
+        pub fn set(&mut self, z: usize, y: usize, x: usize) {
             debug_assert!(z >= self.range.zrange.0);
             debug_assert!(z <= self.range.zrange.1);
             debug_assert!(y >= self.range.yrange.0);
@@ -3250,11 +3253,14 @@ mod occupancy {
             let idx = self.conv_abs3d_to_rel1d(z, y, x);
             let div = idx / BITWIDTH;
             let rem = idx % BITWIDTH;
-            if value {
-                self.field[div] |= 1 << rem;
-            } else {
-                self.field[div] &= !(1 << rem);
-            }
+            self.field[div] |= 1 << rem;
+            self.points.add(z, y, x);
+        }
+        #[allow(clippy::type_complexity)]
+        pub fn points(
+            &self,
+        ) -> std::iter::Map<std::slice::Iter<'_, u32>, fn(&u32) -> (usize, usize, usize)> {
+            self.points.iter_map()
         }
         pub fn get(&self, z: usize, y: usize, x: usize) -> bool {
             let idx = self.conv_abs3d_to_rel1d(z, y, x);
@@ -3285,7 +3291,7 @@ mod occupancy {
                     for x0 in self.range.xrange() {
                         let y1 = if dir { x0 } else { self.range.d - 1 - x0 };
                         if self.get(z0, y0, x0) {
-                            ret.set(z1, y1, x1, true);
+                            ret.set(z1, y1, x1);
                         }
                     }
                 }
@@ -3315,7 +3321,7 @@ mod occupancy {
                     for x0 in self.range.xrange() {
                         let z1 = if dir { x0 } else { self.range.d - 1 - x0 };
                         if self.get(z0, y0, x0) {
-                            ret.set(z1, y1, x1, true);
+                            ret.set(z1, y1, x1);
                         }
                     }
                 }
@@ -3345,7 +3351,7 @@ mod occupancy {
                     for x0 in self.range.xrange() {
                         let x1 = ret.range.xrange.0 + (x0 - self.range.xrange.0);
                         if self.get(z0, y0, x0) {
-                            ret.set(z1, y1, x1, true);
+                            ret.set(z1, y1, x1);
                         }
                     }
                 }
@@ -3410,6 +3416,22 @@ mod occupancy {
             }
         }
     }
+    impl PartialEq for Occupancy {
+        fn eq(&self, other: &Self) -> bool {
+            self.rot_match(other)
+        }
+    }
+    impl Eq for Occupancy {}
+    impl PartialOrd for Occupancy {
+        fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+            self.points.len().partial_cmp(&other.points.len())
+        }
+    }
+    impl Ord for Occupancy {
+        fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+            self.partial_cmp(other).unwrap()
+        }
+    }
 
     #[cfg(test)]
     mod tests {
@@ -3429,7 +3451,7 @@ mod occupancy {
                 for y in range.yrange.0..=range.yrange.1 {
                     for x in range.xrange.0..=range.xrange.1 {
                         if rand.next_usize() % 2 == 0 {
-                            occ.set(z, y, x, true);
+                            occ.set(z, y, x);
                         }
                     }
                 }
@@ -3539,14 +3561,9 @@ mod occupancy {
             let or1 = OccuRange::new(d, 1, 1, 1);
             let mut o0 = Occupancy::new_empty(or0);
             let mut o1 = Occupancy::new_empty(or1);
-            o0.set(0, 0, 0, true);
-            o1.set(1, 1, 1, true);
+            o0.set(0, 0, 0);
+            o1.set(1, 1, 1);
             assert!(o0 == o1);
-        }
-    }
-    impl PartialEq for Occupancy {
-        fn eq(&self, other: &Self) -> bool {
-            self.rot_match(other)
         }
     }
 }
