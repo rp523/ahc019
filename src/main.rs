@@ -3753,7 +3753,9 @@ mod state {
 
             Self { id_fields }
         }
-        fn split_to_binary_graph(&self, occs: &[Occupancy]) -> Vec<Vec<usize>> {
+        fn split_to_binary_graph(
+            occs: &[Occupancy],
+        ) -> (Vec<Vec<usize>>, HashMap<usize, HashSet<usize>>) {
             let d = occs[0].get_range().d();
             let mut id_box = vec![vec![vec![0; d]; d]; d];
             for (oi, occ) in occs.iter().enumerate() {
@@ -3766,6 +3768,7 @@ mod state {
             dist.insert(0, 0);
             let mut que = VecDeque::new(); // oi
             que.push_back(0);
+            let mut pairs = HashMap::new();
             while let Some(oi) = que.pop_front() {
                 let occ0 = &occs[oi];
                 let dist0 = dist[&oi];
@@ -3779,10 +3782,16 @@ mod state {
                                     if nid == 0 || nid == oi + 1 {
                                         continue;
                                     }
-                                    if dist.contains_key(&nid) {
+                                    let noi = nid - 1;
+                                    if oi % 2 == 0 {
+                                        pairs.entry(oi).or_insert(HashSet::new()).insert(noi);
+                                    } else {
+                                        pairs.entry(noi).or_insert(HashSet::new()).insert(oi);
+                                    }
+                                    if dist.contains_key(&noi) {
+                                        debug_assert!(dist0 % 2 != dist[&noi] % 2);
                                         continue;
                                     }
-                                    let noi = nid - 1;
                                     dist.insert(noi, dist0 + 1);
                                     que.push_back(noi);
                                 }
@@ -3795,7 +3804,7 @@ mod state {
             for (oi, dist) in dist {
                 ois[dist % 2].push(oi);
             }
-            ois
+            (ois, pairs)
         }
         pub fn occupancies(&self) -> Vec<Vec<Occupancy>> {
             let d = self.id_fields[0].len();
