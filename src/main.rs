@@ -3183,6 +3183,9 @@ mod occupancy {
             self.xrange.0.chmin(x);
             self.xrange.1.chmax(x);
         }
+        pub fn d(&self) -> usize {
+            self.d
+        }
         pub fn zrange(&self) -> RangeInclusive<usize> {
             self.zrange.0..=self.zrange.1
         }
@@ -3599,7 +3602,7 @@ mod state {
         occupancy::{OccuRange, Occupancy},
         MoveDelta,
     };
-    use std::collections::{BTreeMap, HashMap, HashSet};
+    use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
     pub struct Silhouette {
         pub zx: Vec<Vec<bool>>,
         pub zy: Vec<Vec<bool>>,
@@ -3749,6 +3752,50 @@ mod state {
             }
 
             Self { id_fields }
+        }
+        fn split_to_binary_graph(&self, occs: &[Occupancy]) -> Vec<Vec<usize>> {
+            let d = occs[0].get_range().d();
+            let mut id_box = vec![vec![vec![0; d]; d]; d];
+            for (oi, occ) in occs.iter().enumerate() {
+                for (z, y, x) in occ.points() {
+                    id_box[z][y][x] = oi + 1;
+                }
+            }
+
+            let mut dist = HashMap::new(); // oi, dist
+            dist.insert(0, 0);
+            let mut que = VecDeque::new(); // oi
+            que.push_back(0);
+            while let Some(oi) = que.pop_front() {
+                let occ0 = &occs[oi];
+                let dist0 = dist[&oi];
+                for (z0, y0, x0) in occ0.points() {
+                    debug_assert!(id_box[z0][y0][x0] == oi + 1);
+                    for &(dz, dy, dx) in DELTAS.iter() {
+                        if let Some(z1) = z0.move_delta(dz, 0, d - 1) {
+                            if let Some(y1) = y0.move_delta(dy, 0, d - 1) {
+                                if let Some(x1) = x0.move_delta(dx, 0, d - 1) {
+                                    let nid = id_box[z1][y1][x1];
+                                    if nid == 0 || nid == oi + 1 {
+                                        continue;
+                                    }
+                                    if dist.contains_key(&nid) {
+                                        continue;
+                                    }
+                                    let noi = nid - 1;
+                                    dist.insert(noi, dist0 + 1);
+                                    que.push_back(noi);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            let mut ois = vec![vec![]; 2];
+            for (oi, dist) in dist {
+                ois[dist % 2].push(oi);
+            }
+            ois
         }
         pub fn occupancies(&self) -> Vec<Vec<Occupancy>> {
             let d = self.id_fields[0].len();
