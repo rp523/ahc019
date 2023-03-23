@@ -3593,8 +3593,9 @@ mod state {
     use crate::{
         max_flow::MaxFlow,
         occupancy::{OccuRange, Occupancy},
-        ChangeMinMax, MoveDelta,
+        ChangeMinMax, CoordinateCompress, MoveDelta,
     };
+    use core::num;
     use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
     pub struct Silhouette {
         pub zx: Vec<Vec<bool>>,
@@ -3752,9 +3753,204 @@ mod state {
                 }
             }
 
-            Self { id_fields }
+            let seed = Self { id_fields };
+
+            // trial
+            Self::refine(&seed);
+
+            seed
         }
-        fn split_to_binary_graph(occs: &[Occupancy]) -> (Vec<Vec<usize>>, Vec<Vec<usize>>) {
+        fn refine(state: &State) {
+            let occs = state.occupancies();
+            // split parity, and search nearest pair.
+            let mut splits = vec![]; // [sil, grp, num]
+            let mut all_nears = vec![]; // [sil, all_occ, near-occ]
+            for occs in &occs {
+                let (split, near) = Self::split_to_binary_graph(occs);
+                splits.push(split);
+                all_nears.push(near);
+            }
+            // create compression dictionay.
+            let mut encs = vec![vec![]; 2]; // [sil, grp]
+            for si in 0..2 {
+                for grp in 0..2 {
+                    encs[si].push(splits[si][grp].compress_encoder());
+                }
+            }
+            // build merge memo.
+            let mut merge_occs = vec![];
+            let mut merge_memo: Vec<Vec<Vec<(usize, usize)>>> = vec![]; // (oi0, oi1) for [merge_num, sil, near_pair_num]
+            for si in 0..2 {
+                for &oi0 in &splits[si][0] {
+                    if !encs[si][0].contains_key(&oi0) {
+                        continue;
+                    }
+                    let occ0 = &occs[si][oi0];
+                    //let e0 = encs[si][0][&oi0];
+                    for &oi1 in &all_nears[si][oi0] {
+                        if !encs[si][1].contains_key(&oi1) {
+                            continue;
+                        };
+                        let occ1 = &occs[si][oi1];
+                        //let e1 = encs[si][1][&oi1];
+                        let merge_occ = occ0.clone() + occ1.clone();
+                        let mut already = false;
+                        for (mi, al_merge_occ) in merge_occs.iter().enumerate() {
+                            if &merge_occ == al_merge_occ {
+                                if si == 0 {
+                                    merge_memo[mi][si].push((oi0, oi1));
+                                } else {
+                                    merge_memo[mi][si].push((oi1, oi0));
+                                }
+                                already = true;
+                                break;
+                            }
+                        }
+                        if !already {
+                            merge_occs.push(merge_occ);
+                            if si == 0 {
+                                merge_memo.push(vec![vec![(oi0, oi1); 1], vec![]]);
+                            } else {
+                                merge_memo.push(vec![vec![], vec![(oi1, oi0); 1]]);
+                            }
+                        }
+                    }
+                }
+            }
+            debug_assert!(merge_occs.len() == merge_memo.len());
+            // build flow graph.
+            let num_even = (0..2).map(|si| splits[si][0].len()).collect::<Vec<_>>();
+            let num_pair = (0..2)
+                .map(|si| merge_memo.iter().map(|sils| sils[si].len()).sum::<usize>())
+                .collect::<Vec<_>>();
+            let num_merge = merge_occs.len();
+            let src = num_even.iter().sum::<usize>() + num_pair.iter().sum::<usize>() + num_merge;
+            let dst = src + 1;
+            let mut mf = MaxFlow::new(dst + 1);
+            {
+                for i in 0..num_even[0] {
+                    mf.add_edge(src, i, 1);
+                }
+            }
+            {
+                let mut p0 = num_even[0];
+                for memo in &merge_memo {
+                    for &(oi00, oi01) in &memo[0] {
+                        debug_assert!(encs[0][0].contains_key(&oi00));
+                        debug_assert!(encs[0][1].contains_key(&oi01));
+                        let ei00 = encs[0][0][&oi00];
+                        mf.add_edge(ei00, p0, 1);
+                        p0 += 1;
+                    }
+                }
+                debug_assert!(p0 == num_even[0] + num_pair[0]);
+            }
+            {
+                let mut p0 = num_even[0];
+                for (mi, memo) in merge_memo.iter().enumerate() {
+                    for &(oi00, oi01) in &memo[0] {
+                        debug_assert!(encs[0][0].contains_key(&oi00));
+                        debug_assert!(encs[0][1].contains_key(&oi01));
+                        mf.add_edge(p0, num_even[0] + num_pair[0] + mi, 1);
+                        p0 += 1;
+                    }
+                }
+                debug_assert!(p0 == num_even[0] + num_pair[0]);
+            }
+            {
+                let mut p1 = num_even[0] + num_pair[0] + num_merge;
+                for (mi, memo) in merge_memo.iter().enumerate() {
+                    for &(oi11, oi10) in &memo[1] {
+                        debug_assert!(encs[1][0].contains_key(&oi10));
+                        debug_assert!(encs[1][1].contains_key(&oi11));
+                        mf.add_edge(num_even[0] + num_pair[0] + mi, p1, 1);
+                        p1 += 1;
+                    }
+                }
+                debug_assert!(p1 == num_even[0] + num_pair[0] + num_merge + num_pair[1]);
+            }
+            {
+                let mut p1 = num_even[0] + num_pair[0] + num_merge;
+                for memo in &merge_memo {
+                    for &(oi11, oi10) in &memo[1] {
+                        debug_assert!(encs[1][0].contains_key(&oi10));
+                        debug_assert!(encs[1][1].contains_key(&oi11));
+                        let ei10 = encs[1][0][&oi10];
+                        mf.add_edge(
+                            p1,
+                            num_even[0] + num_pair[0] + num_merge + num_pair[1] + ei10,
+                            1,
+                        );
+                        p1 += 1;
+                    }
+                }
+                debug_assert!(p1 == num_even[0] + num_pair[0] + num_merge + num_pair[1]);
+            }
+            {
+                for ei10 in 0..num_even[1] {
+                    mf.add_edge(
+                        num_even[0] + num_pair[0] + num_merge + num_pair[1] + ei10,
+                        dst,
+                        1,
+                    );
+                }
+            }
+            let flow = mf.max_flow(src, dst);
+            if flow == 0 {
+                return;
+            }
+            let mut remains = occs
+                .iter()
+                .map(|occs| vec![true; occs.len()])
+                .collect::<Vec<Vec<bool>>>();
+            let mut p0_base = 0;
+            let mut p1_base = 0;
+            for (mi, memo) in merge_memo.iter().enumerate() {
+                let vmi = num_even[0] + num_pair[0] + mi;
+                'same_shape_match: for to1 in mf.g[vmi].iter() {
+                    if to1.to < vmi {
+                        continue;
+                    }
+                    if to1.flow == 0 {
+                        continue;
+                    }
+                    // flows to sil 1;
+                    let p1 = to1.to - (num_even[0] + num_pair[0] + num_merge) - p1_base;
+                    let (oi11, oi10) = memo[1][p1];
+                    if (!remains[1][oi10]) || (!remains[1][oi11]) {
+                        continue;
+                    }
+                    for from0 in mf.g[vmi].iter() {
+                        if from0.to > vmi {
+                            continue;
+                        }
+                        if mf.g[from0.to][from0.rev_idx].flow == 0 {
+                            continue;
+                        }
+                        if mf.g[from0.to][from0.rev_idx].to != vmi {
+                            continue;
+                        }
+                        let p0 = from0.to - num_even[0] - p0_base;
+                        let (oi00, oi01) = memo[0][p0];
+                        if (!remains[0][oi00]) || (!remains[0][oi01]) {
+                            continue;
+                        }
+                        debug_assert!(
+                            occs[0][oi00].clone() + occs[0][oi01].clone()
+                                == occs[1][oi10].clone() + occs[1][oi11].clone()
+                        );
+                        // FOUND MATCH!!!!
+                        remains[0][oi00] = false;
+                        remains[0][oi01] = false;
+                        remains[1][oi10] = false;
+                        remains[1][oi11] = false;
+                    }
+                }
+                p0_base += memo[0].len();
+                p1_base += memo[1].len();
+            }
+        }
+        fn split_to_binary_graph(occs: &[Occupancy]) -> (Vec<Vec<usize>>, Vec<HashSet<usize>>) {
             let d = occs[0].get_range().d();
             let mut id_box = vec![vec![vec![0; d]; d]; d];
             for (oi, occ) in occs.iter().enumerate() {
@@ -3768,9 +3964,8 @@ mod state {
             dist.push(Some(0)); // dist[0] = 0;
             let mut que = VecDeque::new(); // oi
             que.push_back(0);
-            let mut near01 = vec![vec![]; 1];
+            let mut near = vec![];
             debug_assert!(dist.len() == 1);
-            debug_assert!(near01.len() == 1);
             while let Some(oi0) = que.pop_front() {
                 let occ0 = &occs[oi0];
                 debug_assert!(oi0 < dist.len());
@@ -3789,15 +3984,14 @@ mod state {
                                         continue;
                                     }
                                     let oi1 = id1 - 1;
-                                    while oi1 >= dist.len() {
+                                    while std::cmp::max(oi0, oi1) >= dist.len() {
                                         dist.push(None);
-                                        near01.push(vec![]);
                                     }
-                                    if oi0 % 2 == 0 {
-                                        near01[oi0].push(oi1);
-                                    } else {
-                                        near01[oi1].push(oi0);
+                                    while std::cmp::max(oi0, oi1) >= near.len() {
+                                        near.push(HashSet::new());
                                     }
+                                    near[oi0].insert(oi1);
+                                    near[oi1].insert(oi0);
                                     if dist[oi1].chmin(d1) {
                                         que.push_back(oi1);
                                     }
@@ -3811,7 +4005,7 @@ mod state {
             for (oi, dist) in dist.into_iter().flatten().enumerate() {
                 ois[dist % 2].push(oi);
             }
-            (ois, near01)
+            (ois, near)
         }
         pub fn occupancies(&self) -> Vec<Vec<Occupancy>> {
             let d = self.id_fields[0].len();
