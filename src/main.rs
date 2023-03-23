@@ -3780,13 +3780,11 @@ mod state {
                 }
             }
             // build merge memo.
-            let mut merge_occs = vec![];
+            let mut merge_occs: Vec<Occupancy> = vec![];
             let mut merge_memo: Vec<Vec<Vec<(usize, usize)>>> = vec![]; // (oi0, oi1) for [merge_num, sil, near_pair_num]
             for si in 0..2 {
                 for &oi0 in &splits[si][0] {
-                    if !encs[si][0].contains_key(&oi0) {
-                        continue;
-                    }
+                    debug_assert!(encs[si][0].contains_key(&oi0));
                     let occ0 = &occs[si][oi0];
                     //let e0 = encs[si][0][&oi0];
                     for &oi1 in &all_nears[si][oi0] {
@@ -3820,6 +3818,21 @@ mod state {
                 }
             }
             debug_assert!(merge_occs.len() == merge_memo.len());
+            if cfg!(debug_assertions) {
+                for memo in &merge_memo {
+                    for (oi00, oi01) in memo[0].iter().copied() {
+                        for (oi10, oi11) in memo[1].iter().copied() {
+                            let occ00 = occs[0][oi00].clone();
+                            let occ01 = occs[0][oi01].clone();
+                            let occ10 = occs[1][oi10].clone();
+                            let occ11 = occs[1][oi11].clone();
+                            let occ0 = occ00 + occ01;
+                            let occ1 = occ10 + occ11;
+                            debug_assert!(occ0 == occ1);
+                        }
+                    }
+                }
+            }
             // build flow graph.
             let num_even = (0..2).map(|si| splits[si][0].len()).collect::<Vec<_>>();
             let num_pair = (0..2)
@@ -3975,6 +3988,7 @@ mod state {
         }
         fn split_to_binary_graph(occs: &[Occupancy]) -> (Vec<Vec<usize>>, Vec<BTreeSet<usize>>) {
             let d = occs[0].get_range().d();
+            debug_assert!(occs.iter().all(|occ| occ.get_range().d() == d));
             let mut id_box = vec![vec![vec![0; d]; d]; d];
             for (oi, occ) in occs.iter().enumerate() {
                 for (z, y, x) in occ.points() {
@@ -3983,40 +3997,37 @@ mod state {
                 }
             }
 
-            let mut dist = vec![]; // oi, dist
-            dist.push(Some(0)); // dist[0] = 0;
-            let mut que = VecDeque::new(); // oi
-            que.push_back(0);
-            let mut near = vec![];
-            debug_assert!(dist.len() == 1);
-            while let Some(oi0) = que.pop_front() {
-                let occ0 = &occs[oi0];
-                debug_assert!(oi0 < dist.len());
-                let d0 = dist[oi0].unwrap();
-                let d1 = d0 + 1;
-                // scan near
-                for (z0, y0, x0) in occ0.points() {
-                    let id0 = id_box[z0][y0][x0];
-                    debug_assert!(id0 == oi0 + 1);
-                    for &(dz, dy, dx) in DELTAS.iter() {
-                        if let Some(z1) = z0.move_delta(dz, 0, d - 1) {
-                            if let Some(y1) = y0.move_delta(dy, 0, d - 1) {
-                                if let Some(x1) = x0.move_delta(dx, 0, d - 1) {
-                                    let id1 = id_box[z1][y1][x1];
-                                    if id1 == 0 || id1 == id0 {
-                                        continue;
-                                    }
-                                    let oi1 = id1 - 1;
-                                    while std::cmp::max(oi0, oi1) >= dist.len() {
-                                        dist.push(None);
-                                    }
-                                    while std::cmp::max(oi0, oi1) >= near.len() {
-                                        near.push(BTreeSet::new());
-                                    }
-                                    near[oi0].insert(oi1);
-                                    near[oi1].insert(oi0);
-                                    if dist[oi1].chmin(d1) {
-                                        que.push_back(oi1);
+            let mut dist = vec![None; occs.len()]; // oi, dist
+            let mut near = vec![BTreeSet::new(); occs.len()];
+            for (oi, _occ) in occs.iter().enumerate() {
+                if dist[oi].is_some() {
+                    continue;
+                }
+                let mut que = VecDeque::new(); // oi
+                que.push_back(oi);
+                dist[oi] = Some(0);
+                while let Some(oi0) = que.pop_front() {
+                    let occ0 = &occs[oi0];
+                    let d0 = dist[oi0].unwrap();
+                    let d1 = d0 + 1;
+                    // scan near
+                    for (z0, y0, x0) in occ0.points() {
+                        let id0 = id_box[z0][y0][x0];
+                        debug_assert!(id0 == oi0 + 1);
+                        for &(dz, dy, dx) in DELTAS.iter() {
+                            if let Some(z1) = z0.move_delta(dz, 0, d - 1) {
+                                if let Some(y1) = y0.move_delta(dy, 0, d - 1) {
+                                    if let Some(x1) = x0.move_delta(dx, 0, d - 1) {
+                                        let id1 = id_box[z1][y1][x1];
+                                        if id1 == 0 || id1 == id0 {
+                                            continue;
+                                        }
+                                        let oi1 = id1 - 1;
+                                        near[oi0].insert(oi1);
+                                        near[oi1].insert(oi0);
+                                        if dist[oi1].chmin(d1) {
+                                            que.push_back(oi1);
+                                        }
                                     }
                                 }
                             }
@@ -4025,9 +4036,10 @@ mod state {
                 }
             }
             let mut ois = vec![vec![]; 2];
-            for (oi, dist) in dist.into_iter().flatten().enumerate() {
-                ois[dist % 2].push(oi);
+            for (oi, dist) in dist.into_iter().enumerate() {
+                ois[dist.unwrap() % 2].push(oi);
             }
+            debug_assert!(ois.iter().map(|ois| ois.len()).sum::<usize>() == occs.len());
             (ois, near)
         }
         pub fn occupancies(&self) -> Vec<Vec<Occupancy>> {
