@@ -3596,7 +3596,7 @@ mod state {
         ChangeMinMax, CoordinateCompress, MoveDelta,
     };
     use core::num;
-    use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+    use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
     pub struct Silhouette {
         pub zx: Vec<Vec<bool>>,
         pub zy: Vec<Vec<bool>>,
@@ -3725,7 +3725,7 @@ mod state {
                         }
                     }
                 }
-                let mut id_set = HashMap::new();
+                let mut id_set = BTreeMap::new();
                 for (z, id_plane) in id_box.iter().enumerate() {
                     for (y, id_line) in id_plane
                         .iter()
@@ -3973,7 +3973,7 @@ mod state {
                 id_fields: id_field,
             })
         }
-        fn split_to_binary_graph(occs: &[Occupancy]) -> (Vec<Vec<usize>>, Vec<HashSet<usize>>) {
+        fn split_to_binary_graph(occs: &[Occupancy]) -> (Vec<Vec<usize>>, Vec<BTreeSet<usize>>) {
             let d = occs[0].get_range().d();
             let mut id_box = vec![vec![vec![0; d]; d]; d];
             for (oi, occ) in occs.iter().enumerate() {
@@ -4011,7 +4011,7 @@ mod state {
                                         dist.push(None);
                                     }
                                     while std::cmp::max(oi0, oi1) >= near.len() {
-                                        near.push(HashSet::new());
+                                        near.push(BTreeSet::new());
                                     }
                                     near[oi0].insert(oi1);
                                     near[oi1].insert(oi0);
