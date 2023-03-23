@@ -3596,7 +3596,7 @@ mod state {
         ChangeMinMax, CoordinateCompress, MoveDelta,
     };
     use core::num;
-    use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+    use std::collections::{BTreeMap, BTreeSet, VecDeque};
     pub struct Silhouette {
         pub zx: Vec<Vec<bool>>,
         pub zy: Vec<Vec<bool>>,
@@ -4064,7 +4064,7 @@ mod solver {
     use crate::occupancy::Occupancy;
     use crate::state::*;
     use crate::MaxFlow;
-    use std::collections::{BTreeMap, HashMap, HashSet};
+    use std::collections::{BTreeMap, BTreeSet};
     pub struct Solver {
         d: usize,
         silhouettes: Vec<Silhouette>,
@@ -4091,7 +4091,7 @@ mod solver {
         fn max_match(
             occs: &[Vec<Occupancy>],
             d: usize,
-        ) -> (Vec<Vec<Vec<Vec<usize>>>>, Vec<HashMap<usize, usize>>) {
+        ) -> (Vec<Vec<Vec<Vec<usize>>>>, Vec<BTreeMap<usize, usize>>) {
             let n0 = occs[0].len();
             let n1 = occs[1].len();
 
@@ -4123,7 +4123,7 @@ mod solver {
             }
             let _f = mf.max_flow(src, dst);
 
-            let mut st = vec![HashMap::new(); 2];
+            let mut st = vec![BTreeMap::new(); 2];
 
             for (i0, _o0) in occs[0].iter().enumerate() {
                 let id0_val = i0 + 1;
@@ -4176,7 +4176,7 @@ mod solver {
             &self,
             id_field: &mut [Vec<Vec<Vec<usize>>>],
             occs: Vec<Vec<Occupancy>>,
-            matches: Vec<HashMap<usize, usize>>,
+            matches: Vec<BTreeMap<usize, usize>>,
         ) {
             // delete isolated box, if possible.
             for ((id_box, occs), (matches, silhouette)) in id_field
@@ -4303,7 +4303,7 @@ mod solver {
                     }
                 }
 
-                let mut cnt = vec![HashMap::new(); 2];
+                let mut cnt = vec![BTreeMap::new(); 2];
                 for (cnt, id_box) in cnt.iter_mut().zip(id_field.iter()) {
                     for id_plane in id_box {
                         for id_line in id_plane {
@@ -4314,7 +4314,7 @@ mod solver {
                     }
                 }
                 let mut score = 0.0;
-                let mut isos = vec![HashSet::new(); 2];
+                let mut isos = vec![BTreeSet::new(); 2];
                 for (&id0, &v) in cnt[0].iter() {
                     if !cnt[1].contains_key(&id0) {
                         score += v as f64;
