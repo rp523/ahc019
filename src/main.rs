@@ -3137,9 +3137,9 @@ mod comp_points {
         fn rebuild() {
             let mut rand = crate::XorShift64::new();
             let d = 14;
-            for l in 0..100 {
+            for _ in 0..100 {
                 let mut zyx = vec![];
-                let mut pts = Points::new();
+                let mut pts = CompPoints::new();
                 for _ in 0..100 {
                     let z = rand.next_usize() % d;
                     let y = rand.next_usize() % d;
@@ -3593,7 +3593,7 @@ mod state {
     use crate::{
         max_flow::MaxFlow,
         occupancy::{OccuRange, Occupancy},
-        MoveDelta,
+        ChangeMinMax, MoveDelta,
     };
     use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
     pub struct Silhouette {
@@ -3638,16 +3638,24 @@ mod state {
             let mut id_fields = vec![vec![vec![vec![0; d]; d]; d]; 2];
             let mut cnt = 0;
             for (silhouette, id_box) in silhouettes.iter().zip(id_fields.iter_mut()) {
-                let mut mf = MaxFlow::new(d * d * d + 2);
-                let src = d * d * d;
-                let dst = src + 1;
-                let to_1dim = |z: usize, y: usize, x: usize| ((z * d) + y) * d + x;
-                let to_3dim = |i: usize| (i / (d * d), (i % (d * d)) / d, i % d);
                 for (z, id_plane) in id_box.iter_mut().enumerate() {
                     for y in (0..d).filter(|&y| silhouette.zy[z][y]) {
                         for x in (0..d).filter(|&x| silhouette.zx[z][x]) {
                             cnt += 1;
                             id_plane[y][x] = cnt;
+                        }
+                    }
+                }
+                let mut mf = MaxFlow::new(d * d * d + 2);
+                let src = d * d * d;
+                let dst = src + 1;
+                let to_1dim = |z: usize, y: usize, x: usize| ((z * d) + y) * d + x;
+                let to_3dim = |i: usize| (i / (d * d), (i % (d * d)) / d, i % d);
+                for (z, (sil_zy_plane, sil_zx_plane)) in
+                    silhouette.zy.iter().zip(silhouette.zx.iter()).enumerate()
+                {
+                    for y in (0..d).filter(|&y| sil_zy_plane[y]) {
+                        for x in (0..d).filter(|&x| sil_zx_plane[x]) {
                             // can set
                             if cfg!(debug_assertions) {
                                 let idx = to_1dim(z, y, x);
@@ -3746,47 +3754,53 @@ mod state {
 
             Self { id_fields }
         }
-        fn split_to_binary_graph(
-            occs: &[Occupancy],
-        ) -> (Vec<Vec<usize>>, HashMap<usize, HashSet<usize>>) {
+        fn split_to_binary_graph(occs: &[Occupancy]) -> (Vec<Vec<usize>>, Vec<Vec<usize>>) {
             let d = occs[0].get_range().d();
             let mut id_box = vec![vec![vec![0; d]; d]; d];
             for (oi, occ) in occs.iter().enumerate() {
                 for (z, y, x) in occ.points() {
-                    id_box[z][y][x] = oi + 1;
+                    let id_val = oi + 1;
+                    id_box[z][y][x] = id_val;
                 }
             }
 
-            let mut dist = HashMap::new(); // oi, dist
-            dist.insert(0, 0);
+            let mut dist = vec![]; // oi, dist
+            dist.push(Some(0)); // dist[0] = 0;
             let mut que = VecDeque::new(); // oi
             que.push_back(0);
-            let mut pairs = HashMap::new();
-            while let Some(oi) = que.pop_front() {
-                let occ0 = &occs[oi];
-                let dist0 = dist[&oi];
+            let mut near01 = vec![vec![]; 1];
+            debug_assert!(dist.len() == 1);
+            debug_assert!(near01.len() == 1);
+            while let Some(oi0) = que.pop_front() {
+                let occ0 = &occs[oi0];
+                debug_assert!(oi0 < dist.len());
+                let d0 = dist[oi0].unwrap();
+                let d1 = d0 + 1;
+                // scan near
                 for (z0, y0, x0) in occ0.points() {
-                    debug_assert!(id_box[z0][y0][x0] == oi + 1);
+                    let id0 = id_box[z0][y0][x0];
+                    debug_assert!(id0 == oi0 + 1);
                     for &(dz, dy, dx) in DELTAS.iter() {
                         if let Some(z1) = z0.move_delta(dz, 0, d - 1) {
                             if let Some(y1) = y0.move_delta(dy, 0, d - 1) {
                                 if let Some(x1) = x0.move_delta(dx, 0, d - 1) {
-                                    let nid = id_box[z1][y1][x1];
-                                    if nid == 0 || nid == oi + 1 {
+                                    let id1 = id_box[z1][y1][x1];
+                                    if id1 == 0 || id1 == id0 {
                                         continue;
                                     }
-                                    let noi = nid - 1;
-                                    if oi % 2 == 0 {
-                                        pairs.entry(oi).or_insert(HashSet::new()).insert(noi);
+                                    let oi1 = id1 - 1;
+                                    while oi1 >= dist.len() {
+                                        dist.push(None);
+                                        near01.push(vec![]);
+                                    }
+                                    if oi0 % 2 == 0 {
+                                        near01[oi0].push(oi1);
                                     } else {
-                                        pairs.entry(noi).or_insert(HashSet::new()).insert(oi);
+                                        near01[oi1].push(oi0);
                                     }
-                                    if dist.contains_key(&noi) {
-                                        debug_assert!(dist0 % 2 != dist[&noi] % 2);
-                                        continue;
+                                    if dist[oi1].chmin(d1) {
+                                        que.push_back(oi1);
                                     }
-                                    dist.insert(noi, dist0 + 1);
-                                    que.push_back(noi);
                                 }
                             }
                         }
@@ -3794,10 +3808,10 @@ mod state {
                 }
             }
             let mut ois = vec![vec![]; 2];
-            for (oi, dist) in dist {
+            for (oi, dist) in dist.into_iter().flatten().enumerate() {
                 ois[dist % 2].push(oi);
             }
-            (ois, pairs)
+            (ois, near01)
         }
         pub fn occupancies(&self) -> Vec<Vec<Occupancy>> {
             let d = self.id_fields[0].len();
