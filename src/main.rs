@@ -3295,6 +3295,7 @@ mod occupancy {
         }
         fn rot_z_dir(&mut self, dir: bool) {
             let mut range = self.range;
+            let org_volume = range.volume();
             std::mem::swap(&mut range.yrange, &mut range.xrange);
             if dir {
                 std::mem::swap(&mut range.xrange.0, &mut range.xrange.1);
@@ -3305,6 +3306,7 @@ mod occupancy {
                 range.yrange.0 = range.d - 1 - range.yrange.0;
                 range.yrange.1 = range.d - 1 - range.yrange.1;
             }
+            debug_assert!(org_volume == range.volume());
             let mut ret = Self::new_empty(range);
             for z0 in self.range.zrange() {
                 let z1 = ret.range.zrange.0 + (z0 - self.range.zrange.0);
@@ -3325,6 +3327,7 @@ mod occupancy {
         }
         fn rot_y_dir(&mut self, dir: bool) {
             let mut range = self.range;
+            let org_volume = range.volume();
             std::mem::swap(&mut range.zrange, &mut range.xrange);
             if dir {
                 std::mem::swap(&mut range.xrange.0, &mut range.xrange.1);
@@ -3335,6 +3338,7 @@ mod occupancy {
                 range.zrange.0 = range.d - 1 - range.zrange.0;
                 range.zrange.1 = range.d - 1 - range.zrange.1;
             }
+            debug_assert!(org_volume == range.volume());
             let mut ret = Self::new_empty(range);
             for z0 in self.range.zrange() {
                 let x1 = if dir { self.range.d - 1 - z0 } else { z0 };
@@ -3355,6 +3359,7 @@ mod occupancy {
         }
         fn rot_x_dir(&mut self, dir: bool) {
             let mut range = self.range;
+            let org_volume = range.volume();
             std::mem::swap(&mut range.zrange, &mut range.yrange);
             if dir {
                 std::mem::swap(&mut range.yrange.0, &mut range.yrange.1);
@@ -3365,6 +3370,7 @@ mod occupancy {
                 range.zrange.0 = range.d - 1 - range.zrange.0;
                 range.zrange.1 = range.d - 1 - range.zrange.1;
             }
+            debug_assert!(org_volume == range.volume());
             let mut ret = Self::new_empty(range);
             for z0 in self.range.zrange() {
                 let y1 = if dir { self.range.d - 1 - z0 } else { z0 };
@@ -3382,12 +3388,12 @@ mod occupancy {
         }
         fn rot_z_match(&self, other: &Self) -> bool {
             let mut re = other.clone();
-            if self.complete_match(&re) {
+            if self.move_match(&re) {
                 return true;
             }
             for _ in 0..3 {
                 re.rot_z();
-                if self.complete_match(&re) {
+                if self.move_match(&re) {
                     return true;
                 }
             }
@@ -3410,7 +3416,7 @@ mod occupancy {
             }
             false
         }
-        pub fn complete_match(&self, other: &Self) -> bool {
+        pub fn move_match(&self, other: &Self) -> bool {
             if self.range.zsize() != other.range.zsize() {
                 return false;
             }
@@ -3443,13 +3449,15 @@ mod occupancy {
             self.rot_match(other)
         }
     }
-    impl Eq for Occupancy {}
     impl std::ops::Add<Self> for Occupancy {
         type Output = Self;
         fn add(self, rhs: Self) -> Self::Output {
             let range = self.range + rhs.range;
             let mut ret = Self::new_empty(range);
-            for (z, y, x) in self.points().chain(rhs.points()) {
+            for (z, y, x) in self.points() {
+                ret.set(z, y, x);
+            }
+            for (z, y, x) in rhs.points() {
                 ret.set(z, y, x);
             }
             ret
@@ -3597,6 +3605,7 @@ mod state {
     };
     use core::num;
     use std::collections::{BTreeMap, BTreeSet, VecDeque};
+    use std::time::Instant;
     pub struct Silhouette {
         pub zx: Vec<Vec<bool>>,
         pub zy: Vec<Vec<bool>>,
@@ -3635,7 +3644,7 @@ mod state {
         (-1, 0, 0),
     ];
     impl State {
-        pub fn new(silhouettes: &[Silhouette], d: usize) -> Self {
+        pub fn new(silhouettes: &[Silhouette], d: usize, start_time: &Instant) -> Self {
             let mut id_fields = vec![vec![vec![vec![0; d]; d]; d]; 2];
             let mut cnt = 0;
             for (silhouette, id_box) in silhouettes.iter().zip(id_fields.iter_mut()) {
@@ -3758,6 +3767,9 @@ mod state {
             // trial
             while let Some(next_state) = Self::refine(&state) {
                 state = next_state;
+                if start_time.elapsed().as_millis() > 5_000 {
+                    break;
+                }
             }
 
             state
@@ -3794,19 +3806,23 @@ mod state {
                         let occ1 = &occs[si][oi1];
                         //let e1 = encs[si][1][&oi1];
                         let merge_occ = occ0.clone() + occ1.clone();
-                        let mut already = false;
+                        let mut is_new = true;
                         for (mi, al_merge_occ) in merge_occs.iter().enumerate() {
                             if &merge_occ == al_merge_occ {
+                                debug_assert!(
+                                    merge_occ.get_range().volume()
+                                        == al_merge_occ.get_range().volume()
+                                );
                                 if si == 0 {
                                     merge_memo[mi][si].push((oi0, oi1));
                                 } else {
                                     merge_memo[mi][si].push((oi1, oi0));
                                 }
-                                already = true;
+                                is_new = false;
                                 break;
                             }
                         }
-                        if !already {
+                        if is_new {
                             merge_occs.push(merge_occ);
                             if si == 0 {
                                 merge_memo.push(vec![vec![(oi0, oi1); 1], vec![]]);
@@ -3817,6 +3833,7 @@ mod state {
                     }
                 }
             }
+            debug_assert!(merge_memo.iter().all(|memo| memo.len() == 2));
             debug_assert!(merge_occs.len() == merge_memo.len());
             if cfg!(debug_assertions) {
                 for memo in &merge_memo {
@@ -3828,6 +3845,7 @@ mod state {
                             let occ11 = occs[1][oi11].clone();
                             let occ0 = occ00 + occ01;
                             let occ1 = occ10 + occ11;
+                            debug_assert!(occ0.points().count() == occ1.points().count());
                             debug_assert!(occ0 == occ1);
                         }
                     }
@@ -4077,14 +4095,16 @@ mod solver {
     use crate::state::*;
     use crate::MaxFlow;
     use std::collections::{BTreeMap, BTreeSet};
+    use std::time::Instant;
     pub struct Solver {
         d: usize,
         silhouettes: Vec<Silhouette>,
+        start_time: Instant,
     }
     impl Solver {
         pub fn new() -> Self {
             use crate::procon_reader::*;
-
+            let start_time = Instant::now();
             let mut args = std::env::args().collect::<Vec<String>>();
             args.remove(0);
             for arg in args {
@@ -4094,10 +4114,13 @@ mod solver {
                     }
                 }
             }
-
             let d = read::<usize>();
             let silhouettes = (0..2).map(|_| Silhouette::new(d)).collect::<Vec<_>>();
-            Self { d, silhouettes }
+            Self {
+                d,
+                silhouettes,
+                start_time,
+            }
         }
         #[allow(clippy::type_complexity)]
         fn max_match(
@@ -4430,7 +4453,7 @@ mod solver {
             }
         }
         pub fn solve(&self) {
-            let state = State::new(&self.silhouettes, self.d);
+            let state = State::new(&self.silhouettes, self.d, &self.start_time);
             self.debug_id_field(&state.id_fields);
             let occs = state.occupancies();
             self.debug_occupancies(&occs);
