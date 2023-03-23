@@ -3420,10 +3420,10 @@ mod occupancy {
             if self.range.zsize() != other.range.zsize() {
                 return false;
             }
-            if self.range.ysize() != other.range.xsize() {
+            if self.range.ysize() != other.range.ysize() {
                 return false;
             }
-            if self.range.ysize() != other.range.xsize() {
+            if self.range.xsize() != other.range.xsize() {
                 return false;
             }
             if self.field != other.field {
@@ -3446,7 +3446,11 @@ mod occupancy {
     }
     impl PartialEq for Occupancy {
         fn eq(&self, other: &Self) -> bool {
-            self.rot_match(other)
+            let ret = self.rot_match(other);
+            if cfg!(debug_assertions) && ret {
+                debug_assert!(self.get_range().volume() == other.get_range().volume());
+            }
+            ret
         }
     }
     impl std::ops::Add<Self> for Occupancy {
@@ -3767,7 +3771,7 @@ mod state {
             // trial
             while let Some(next_state) = Self::refine(&state) {
                 state = next_state;
-                if start_time.elapsed().as_millis() > 5_000 {
+                if start_time.elapsed().as_millis() > 4_000 {
                     break;
                 }
             }
@@ -4063,7 +4067,7 @@ mod state {
         pub fn occupancies(&self) -> Vec<Vec<Occupancy>> {
             let d = self.id_fields[0].len();
             let mut ret: Vec<Vec<Occupancy>> = vec![];
-            for (si, id_box) in self.id_fields.iter().enumerate() {
+            for id_box in self.id_fields.iter() {
                 let mut ranges: BTreeMap<usize, OccuRange> = BTreeMap::new();
                 for (z, id_plane) in id_box.iter().enumerate() {
                     for (y, id_line) in id_plane.iter().enumerate() {
@@ -4081,7 +4085,7 @@ mod state {
                 }
                 let occus = ranges
                     .into_iter()
-                    .map(|(id_val, range)| Occupancy::new(&self.id_fields[si], id_val, range))
+                    .map(|(id_val, range)| Occupancy::new(id_box, id_val, range))
                     .collect::<Vec<Occupancy>>();
                 ret.push(occus);
             }
