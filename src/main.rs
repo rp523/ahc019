@@ -3425,14 +3425,14 @@ mod occupancy {
             }
             true
         }
-        pub fn write_id(&self, id_field: &mut [Vec<Vec<usize>>], target_id: usize) {
+        pub fn write_id(&self, id_box: &mut [Vec<Vec<usize>>], target_id: usize) {
             for z in self.range.zrange() {
                 for y in self.range.yrange() {
                     for x in self.range.xrange() {
                         if !self.get(z, y, x) {
                             continue;
                         }
-                        id_field[z][y][x] = target_id;
+                        id_box[z][y][x] = target_id;
                     }
                 }
             }
@@ -3753,14 +3753,16 @@ mod state {
                 }
             }
 
-            let seed = Self { id_fields };
+            let mut state = Self { id_fields };
 
             // trial
-            Self::refine(&seed);
+            while let Some(next_state) = Self::refine(&state) {
+                state = next_state;
+            }
 
-            seed
+            state
         }
-        fn refine(state: &State) {
+        fn refine(state: &State) -> Option<State> {
             let occs = state.occupancies();
             // split parity, and search nearest pair.
             let mut splits = vec![]; // [sil, grp, num]
@@ -3897,7 +3899,18 @@ mod state {
             }
             let flow = mf.max_flow(src, dst);
             if flow == 0 {
-                return;
+                return None;
+            }
+
+            // flow any.
+            let d = occs[0][0].get_range().d();
+            let mut id_field = vec![vec![vec![vec![0; d]; d]; d]; 2];
+            let mut id_cnt = 1;
+            for (id_box, occs) in id_field.iter_mut().zip(occs.iter()) {
+                for occ in occs {
+                    occ.write_id(id_box, id_cnt);
+                    id_cnt += 1;
+                }
             }
             let mut remains = occs
                 .iter()
@@ -3907,7 +3920,7 @@ mod state {
             let mut p1_base = 0;
             for (mi, memo) in merge_memo.iter().enumerate() {
                 let vmi = num_even[0] + num_pair[0] + mi;
-                'same_shape_match: for to1 in mf.g[vmi].iter() {
+                for to1 in mf.g[vmi].iter() {
                     if to1.to < vmi {
                         continue;
                     }
@@ -3944,11 +3957,21 @@ mod state {
                         remains[0][oi01] = false;
                         remains[1][oi10] = false;
                         remains[1][oi11] = false;
+                        let (z0, y0, x0) = occs[0][oi00].points().next().unwrap();
+                        let merge_id0 = id_field[0][z0][y0][x0];
+                        occs[0][oi01].write_id(&mut id_field[0], merge_id0);
+                        let (z1, y1, x1) = occs[1][oi10].points().next().unwrap();
+                        let merge_id1 = id_field[1][z1][y1][x1];
+                        occs[1][oi11].write_id(&mut id_field[1], merge_id1);
+                        break;
                     }
                 }
                 p0_base += memo[0].len();
                 p1_base += memo[1].len();
             }
+            Some(Self {
+                id_fields: id_field,
+            })
         }
         fn split_to_binary_graph(occs: &[Occupancy]) -> (Vec<Vec<usize>>, Vec<HashSet<usize>>) {
             let d = occs[0].get_range().d();
