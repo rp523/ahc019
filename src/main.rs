@@ -3228,7 +3228,6 @@ mod occupancy {
     pub struct Occupancy {
         field: Vec<u64>,
         range: OccuRange,
-        points: CompPoints,
     }
     const BITWIDTH: usize = 64;
     impl Occupancy {
@@ -3237,7 +3236,6 @@ mod occupancy {
             Self {
                 field: vec![0; sz],
                 range,
-                points: CompPoints::new(),
             }
         }
         pub fn new(id_fields: &[Vec<Vec<usize>>], target_id: usize, range: OccuRange) -> Self {
@@ -3273,16 +3271,21 @@ mod occupancy {
             let div = idx / BITWIDTH;
             let rem = idx % BITWIDTH;
             self.field[div] |= 1 << rem;
-            self.points.add(z, y, x);
         }
         #[allow(clippy::type_complexity)]
-        pub fn points(
-            &self,
-        ) -> std::iter::Map<std::slice::Iter<'_, u32>, fn(&u32) -> (usize, usize, usize)> {
-            self.points.iter_map()
+        pub fn points(&self) -> Vec<(usize, usize, usize)> {
+            let mut points = vec![];
+            for z in self.range.zrange() {
+                for y in self.range.yrange() {
+                    for x in self.range.xrange().filter(|&x| self.get(z, y, x)) {
+                        points.push((z, y, x));
+                    }
+                }
+            }
+            points
         }
         pub fn eff_size(&self) -> usize {
-            self.points.len()
+            self.points().len()
         }
         pub fn get(&self, z: usize, y: usize, x: usize) -> bool {
             let idx = self.conv_abs3d_to_rel1d(z, y, x);
@@ -3849,7 +3852,7 @@ mod state {
                             let occ11 = occs[1][oi11].clone();
                             let occ0 = occ00 + occ01;
                             let occ1 = occ10 + occ11;
-                            debug_assert!(occ0.points().count() == occ1.points().count());
+                            debug_assert!(occ0.points().len() == occ1.points().len());
                             debug_assert!(occ0 == occ1);
                         }
                     }
@@ -3992,10 +3995,10 @@ mod state {
                         remains[0][oi01] = false;
                         remains[1][oi10] = false;
                         remains[1][oi11] = false;
-                        let (z0, y0, x0) = occs[0][oi00].points().next().unwrap();
+                        let (z0, y0, x0) = occs[0][oi00].points()[0];
                         let merge_id0 = id_field[0][z0][y0][x0];
                         occs[0][oi01].write_id(&mut id_field[0], merge_id0);
-                        let (z1, y1, x1) = occs[1][oi10].points().next().unwrap();
+                        let (z1, y1, x1) = occs[1][oi10].points()[0];
                         let merge_id1 = id_field[1][z1][y1][x1];
                         occs[1][oi11].write_id(&mut id_field[1], merge_id1);
                         break;
