@@ -3236,7 +3236,7 @@ mod comp_points {
 }
 mod occupancy {
     use crate::{comp_points::CompPoints, ChangeMinMax};
-    use std::ops::RangeInclusive;
+    use std::{collections::btree_map::Range, ops::RangeInclusive};
     #[derive(Clone, Copy, PartialEq)]
     pub struct OccuRange {
         d: usize,
@@ -3302,6 +3302,143 @@ mod occupancy {
         }
     }
 
+    trait IntoRotIterator {
+        fn into_rot_iterator(self) -> RotIterator;
+    }
+    impl IntoRotIterator for RangeInclusive<usize> {
+        fn into_rot_iterator(self) -> RotIterator {
+            RotIterator {
+                nxt: *self.start(),
+                lo: *self.start(),
+                hi: *self.end(),
+                dir: true,
+                fin: false,
+            }
+        }
+    }
+    #[derive(Clone, Copy)]
+    struct RotIterator {
+        nxt: usize,
+        lo: usize,
+        hi: usize,
+        dir: bool,
+        fin: bool,
+    }
+    impl RotIterator {
+        fn new(lo: usize, hi: usize) -> Self {
+            debug_assert!(lo <= hi);
+            Self {
+                nxt: lo,
+                lo,
+                hi,
+                dir: true,
+                fin: false,
+            }
+        }
+        fn to_reverse(&self) -> Self {
+            let mut ret = self.clone();
+            if self.dir {
+                ret.dir = false;
+                ret.nxt = self.hi;
+            } else {
+                ret.dir = true;
+                ret.nxt = self.lo;
+            }
+            ret
+        }
+        fn init(&mut self) {
+            self.fin = false;
+            if self.dir {
+                self.nxt = self.lo;
+            } else {
+                self.nxt = self.hi;
+            }
+        }
+        fn len(&self) -> usize {
+            self.hi - self.lo + 1
+        }
+    }
+    impl Iterator for RotIterator {
+        type Item = usize;
+        fn next(&mut self) -> Option<Self::Item> {
+            if self.fin {
+                return None;
+            }
+            if self.dir {
+                // rising
+                if self.nxt >= self.hi {
+                    self.fin = true;
+                    Some(self.nxt)
+                } else {
+                    self.nxt += 1;
+                    Some(self.nxt - 1)
+                }
+            } else {
+                // falling
+                if self.nxt <= self.lo {
+                    self.fin = true;
+                    Some(self.nxt)
+                } else {
+                    self.nxt -= 1;
+                    Some(self.nxt + 1)
+                }
+            }
+        }
+    }
+    mod rot_iterator_tests {
+        use super::*;
+        #[test]
+        fn rot_iterator_test() {
+            let d = 10usize;
+            let mut rot_iters = vec![(0..=d).into_rot_iterator()];
+            for _ in 0..3 {
+                let nxt = rot_iters.last().unwrap().to_reverse();
+                rot_iters.push(nxt);
+            }
+            for (r, rot_iter) in rot_iters.into_iter().enumerate() {
+                for (i, val) in rot_iter.enumerate() {
+                    if r % 2 == 0 {
+                        assert_eq!(i, val);
+                    } else {
+                        assert_eq!(d - i, val);
+                    }
+                }
+            }
+        }
+    }
+    #[derive(Clone)]
+    struct Range3d {
+        ziter: RotIterator,
+        yiter: RotIterator,
+        xiter: RotIterator,
+    }
+    impl Range3d {
+        fn new(range: &OccuRange) -> Self {
+            Self {
+                ziter: (0..=(range.zsize() - 1)).into_rot_iterator(),
+                yiter: (0..=(range.ysize() - 1)).into_rot_iterator(),
+                xiter: (0..=(range.xsize() - 1)).into_rot_iterator(),
+            }
+        }
+        fn to_rot_x(&self) -> Self {
+            let mut ret = self.clone();
+            std::mem::swap(&mut ret.ziter, &mut ret.yiter);
+            ret.yiter = ret.yiter.to_reverse();
+            ret
+        }
+        fn to_rot_y(&self) -> Self {
+            let mut ret = self.clone();
+            std::mem::swap(&mut ret.xiter, &mut ret.ziter);
+            ret.ziter = ret.ziter.to_reverse();
+            ret
+        }
+        fn to_rot_z(&self) -> Self {
+            let mut ret = self.clone();
+            std::mem::swap(&mut ret.yiter, &mut ret.xiter);
+            ret.xiter = ret.xiter.to_reverse();
+            ret
+        }
+    }
     #[derive(Clone)]
     pub struct Occupancy {
         field: Vec<u64>,
@@ -3411,6 +3548,13 @@ mod occupancy {
             let rem = idx % BITWIDTH;
             ((self.field[div] >> rem) & 1) != 0
         }
+        fn get_rel(&self, rz: usize, ry: usize, rx: usize) -> bool {
+            let range = self.get_range();
+            let idx = (rz * range.ysize() + ry) * range.xsize() + rx;
+            let div = idx / BITWIDTH;
+            let rem = idx % BITWIDTH;
+            ((self.field[div] >> rem) & 1) != 0
+        }
         fn rot_z(&mut self) {
             self.rot_z_dir(true)
         }
@@ -3507,7 +3651,33 @@ mod occupancy {
             }
             *self = ret;
         }
+        fn mov_match(&self, srange3d: &Range3d, other: &Self, orange3d: &Range3d) -> bool {
+            if other.get_range().zsize() != orange3d.ziter.len() {
+                return false;
+            }
+            if other.get_range().ysize() != orange3d.yiter.len() {
+                return false;
+            }
+            if other.get_range().xsize() != orange3d.xiter.len() {
+                return false;
+            }
+            for (rz0, rz1) in srange3d.ziter.zip(orange3d.ziter) {
+                for (ry0, ry1) in srange3d.yiter.zip(orange3d.yiter) {
+                    for (rx0, rx1) in srange3d.xiter.zip(orange3d.xiter) {
+                        if self.get_rel(rz0, ry0, rx0) != other.get_rel(rz1, ry1, rx1) {
+                            return false;
+                        }
+                    }
+                }
+            }
+            true
+        }
         fn rot_z_match(&self, other: &Self) -> bool {
+            let mut rots = vec![Range3d::new(self.get_range())];
+            for _ in 0..3 {
+                let nrot = rots.last().unwrap().to_rot_z();
+                rots.push(nrot);
+            }
             let mut re = other.clone();
             if self.move_match(&re) {
                 return true;
@@ -3539,17 +3709,42 @@ mod occupancy {
         }
         pub fn move_match(&self, other: &Self) -> bool {
             if self.range.zsize() != other.range.zsize() {
+                debug_assert!(!self.mov_match(
+                    &Range3d::new(self.get_range()),
+                    other,
+                    &Range3d::new(other.get_range())
+                ));
                 return false;
             }
             if self.range.ysize() != other.range.ysize() {
+                debug_assert!(!self.mov_match(
+                    &Range3d::new(self.get_range()),
+                    other,
+                    &Range3d::new(other.get_range())
+                ));
                 return false;
             }
             if self.range.xsize() != other.range.xsize() {
+                debug_assert!(!self.mov_match(
+                    &Range3d::new(self.get_range()),
+                    other,
+                    &Range3d::new(other.get_range())
+                ));
                 return false;
             }
             if self.field != other.field {
+                debug_assert!(!self.mov_match(
+                    &Range3d::new(self.get_range()),
+                    other,
+                    &Range3d::new(other.get_range())
+                ));
                 return false;
             }
+            debug_assert!(self.mov_match(
+                &Range3d::new(self.get_range()),
+                other,
+                &Range3d::new(other.get_range())
+            ));
             true
         }
         pub fn write_id(&self, id_box: &mut [Vec<Vec<i32>>], target_id: i32) {
@@ -3595,7 +3790,7 @@ mod occupancy {
     mod tests {
         use super::{OccuRange, Occupancy};
         use crate::XorShift64;
-        const TEST_LOOP: usize = 100;
+        const TEST_LOOP: usize = 10000;
         fn create_occ(
             d: usize,
             zsize: usize,
@@ -3683,7 +3878,7 @@ mod occupancy {
             }
         }
         #[test]
-        fn test_rot2() {
+        fn test_rot() {
             let mut rand = XorShift64::new();
             let d = 14;
             for _ in 0..TEST_LOOP {
@@ -3691,10 +3886,9 @@ mod occupancy {
                 let ysize = 1 + rand.next_usize() % (d - 1);
                 let xsize = 1 + rand.next_usize() % (d - 1);
                 let occ = create_occ(d, zsize, ysize, xsize, &mut rand);
-                let r = rand.next_u64() % 15 + 1;
                 let ref0 = occ.clone();
                 let mut ref1 = occ.clone();
-                for _ in 0..r {
+                for _ in 0..100 {
                     match rand.next_u64() % 3 {
                         0 => {
                             ref1.rot_z();
