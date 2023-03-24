@@ -3285,7 +3285,9 @@ mod occupancy {
             points
         }
         pub fn eff_size(&self) -> usize {
-            self.points().len()
+            let ret = self.field.iter().map(|x| x.count_ones()).sum::<u32>() as usize;
+            debug_assert!(ret == self.points().len());
+            ret
         }
         pub fn get(&self, z: usize, y: usize, x: usize) -> bool {
             let idx = self.conv_abs3d_to_rel1d(z, y, x);
