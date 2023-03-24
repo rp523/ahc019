@@ -3318,12 +3318,12 @@ mod occupancy {
                 cost: None,
             }
         }
-        pub fn new(id_fields: &[Vec<Vec<usize>>], target_id: usize, range: OccuRange) -> Self {
+        pub fn new(id_field: &[Vec<Vec<i32>>], target_id: i32, range: OccuRange) -> Self {
             let mut ret = Self::new_empty(range);
             for z in range.zrange() {
                 for y in range.yrange() {
                     for x in range.xrange() {
-                        let id_value = id_fields[z][y][x];
+                        let id_value = id_field[z][y][x];
                         if id_value == target_id {
                             ret.set(z, y, x);
                         }
@@ -3332,7 +3332,7 @@ mod occupancy {
             }
             ret
         }
-        pub fn get_cost(&mut self, id_box: &[Vec<Vec<usize>>], own_id: usize) -> i64 {
+        pub fn get_cost(&mut self, id_box: &[Vec<Vec<i32>>], own_id: i32) -> i64 {
             let d = id_box.len();
             if let Some(cost) = self.cost {
                 return cost;
@@ -3552,7 +3552,7 @@ mod occupancy {
             }
             true
         }
-        pub fn write_id(&self, id_box: &mut [Vec<Vec<usize>>], target_id: usize) {
+        pub fn write_id(&self, id_box: &mut [Vec<Vec<i32>>], target_id: i32) {
             for z in self.range.zrange() {
                 for y in self.range.yrange() {
                     for x in self.range.xrange() {
@@ -3760,7 +3760,7 @@ mod state {
         }
     }
     pub struct State {
-        pub id_fields: Vec<Vec<Vec<Vec<usize>>>>,
+        pub id_field: Vec<Vec<Vec<Vec<i32>>>>,
     }
     const DELTAS: [(i32, i32, i32); 6] = [
         (0, 0, 1),
@@ -3772,9 +3772,9 @@ mod state {
     ];
     impl State {
         pub fn new(silhouettes: &[Silhouette], d: usize, start_time: &Instant) -> Self {
-            let mut id_fields = vec![vec![vec![vec![0; d]; d]; d]; 2];
+            let mut id_field = vec![vec![vec![vec![0; d]; d]; d]; 2];
             let mut cnt = 0;
-            for (silhouette, id_box) in silhouettes.iter().zip(id_fields.iter_mut()) {
+            for (silhouette, id_box) in silhouettes.iter().zip(id_field.iter_mut()) {
                 for (z, id_plane) in id_box.iter_mut().enumerate() {
                     for y in (0..d).filter(|&y| silhouette.zy[z][y]) {
                         for x in (0..d).filter(|&x| silhouette.zx[z][x]) {
@@ -3889,7 +3889,7 @@ mod state {
                 }
             }
 
-            let mut state = Self { id_fields };
+            let mut state = Self { id_field };
 
             // trial
             while let Some(next_state) = Self::refine(&state) {
@@ -3902,7 +3902,7 @@ mod state {
             state
         }
         fn refine(state: &State) -> Option<State> {
-            let d = state.id_fields[0].len();
+            let d = state.id_field[0].len();
             let mut occs = state.occupancies();
             // split parity, and search nearest pair.
             let mut splits = vec![]; // [sil, grp, num]
@@ -3979,7 +3979,7 @@ mod state {
             debug_assert!(
                 merge_occs.iter().map(|occ| occ.eff_size()).max().unwrap()
                     <= state
-                        .id_fields
+                        .id_field
                         .iter()
                         .map(|id_box| id_box
                             .iter()
@@ -4045,16 +4045,16 @@ mod state {
                         let cost0 = {
                             let occ = &mut occs[0][oi00];
                             let (z, y, x) = occ.points()[0];
-                            let id = state.id_fields[0][z][y][x];
+                            let id = state.id_field[0][z][y][x];
                             debug_assert!(id > 0);
-                            occ.get_cost(&state.id_fields[0], id)
+                            occ.get_cost(&state.id_field[0], id)
                         };
                         let cost1 = {
                             let occ = &mut occs[0][oi01];
                             let (z, y, x) = occ.points()[0];
-                            let id = state.id_fields[0][z][y][x];
+                            let id = state.id_field[0][z][y][x];
                             debug_assert!(id > 0);
-                            occ.get_cost(&state.id_fields[0], id)
+                            occ.get_cost(&state.id_field[0], id)
                         };
                         let cost = cost0 + cost1;
                         minf.add_cost_edge(p0, num_even[0] + num_pair[0] + mi, 1, cost);
@@ -4074,16 +4074,16 @@ mod state {
                         let cost0 = {
                             let occ = &mut occs[1][oi10];
                             let (z, y, x) = occ.points()[0];
-                            let id = state.id_fields[1][z][y][x];
+                            let id = state.id_field[1][z][y][x];
                             debug_assert!(id > 0);
-                            occ.get_cost(&state.id_fields[1], id)
+                            occ.get_cost(&state.id_field[1], id)
                         };
                         let cost1 = {
                             let occ = &mut occs[1][oi11];
                             let (z, y, x) = occ.points()[0];
-                            let id = state.id_fields[1][z][y][x];
+                            let id = state.id_field[1][z][y][x];
                             debug_assert!(id > 0);
-                            occ.get_cost(&state.id_fields[1], id)
+                            occ.get_cost(&state.id_field[1], id)
                         };
                         let cost = cost0 + cost1;
                         minf.add_cost_edge(num_even[0] + num_pair[0] + mi, p1, 1, cost);
@@ -4203,9 +4203,7 @@ mod state {
                 p0_base += memo[0].len();
                 p1_base += memo[1].len();
             }
-            Some(Self {
-                id_fields: id_field,
-            })
+            Some(Self { id_field })
         }
         fn split_to_binary_graph(occs: &[Occupancy]) -> (Vec<Vec<usize>>, Vec<BTreeSet<usize>>) {
             let d = occs[0].get_range().d();
@@ -4264,10 +4262,10 @@ mod state {
             (ois, near)
         }
         pub fn occupancies(&self) -> Vec<Vec<Occupancy>> {
-            let d = self.id_fields[0].len();
+            let d = self.id_field[0].len();
             let mut ret: Vec<Vec<Occupancy>> = vec![];
-            for id_box in self.id_fields.iter() {
-                let mut ranges: BTreeMap<usize, OccuRange> = BTreeMap::new();
+            for id_box in self.id_field.iter() {
+                let mut ranges: BTreeMap<i32, OccuRange> = BTreeMap::new();
                 for (z, id_plane) in id_box.iter().enumerate() {
                     for (y, id_line) in id_plane.iter().enumerate() {
                         for (x, &id_val) in id_line.iter().enumerate() {
@@ -4329,7 +4327,7 @@ mod solver {
         fn max_match(
             occs: &mut [Vec<Occupancy>],
             d: usize,
-        ) -> (Vec<Vec<Vec<Vec<usize>>>>, Vec<BTreeMap<usize, usize>>) {
+        ) -> (Vec<Vec<Vec<Vec<i32>>>>, Vec<BTreeMap<usize, usize>>) {
             let n0 = occs[0].len();
             let n1 = occs[1].len();
 
@@ -4382,7 +4380,7 @@ mod solver {
             let mut st = vec![BTreeMap::new(); 2];
 
             for (i0, _o0) in occs[0].iter().enumerate() {
-                let id0_val = i0 + 1;
+                let id0_val = i0 as i32 + 1;
                 for e in minf.g[i0].iter() {
                     if e.flow == 0 {
                         continue;
@@ -4400,7 +4398,7 @@ mod solver {
             }
             (id_field, st)
         }
-        fn zx_any(id_box: &[Vec<Vec<usize>>], sz: usize, sx: usize, id_val: usize) -> bool {
+        fn zx_any(id_box: &[Vec<Vec<i32>>], sz: usize, sx: usize, id_val: i32) -> bool {
             let d = id_box.len();
             for ay in 0..d {
                 let aid = id_box[sz][ay][sx];
@@ -4414,7 +4412,7 @@ mod solver {
             }
             false
         }
-        fn zy_any(id_box: &[Vec<Vec<usize>>], sz: usize, sy: usize, id_val: usize) -> bool {
+        fn zy_any(id_box: &[Vec<Vec<i32>>], sz: usize, sy: usize, id_val: i32) -> bool {
             let d = id_box.len();
             for ax in 0..d {
                 let aid = id_box[sz][sy][ax];
@@ -4430,7 +4428,7 @@ mod solver {
         }
         fn remove_useless(
             &self,
-            id_field: &mut [Vec<Vec<Vec<usize>>>],
+            id_field: &mut [Vec<Vec<Vec<i32>>>],
             mut occs: Vec<Vec<Occupancy>>,
             matches: Vec<BTreeMap<usize, usize>>,
         ) {
@@ -4454,14 +4452,14 @@ mod solver {
                         if unmatches.iter().any(|&oi| oi == i) {
                             let (z, y, x) = occ.points()[0];
                             let id_val = id_box[z][y][x];
-                            debug_assert!(id_val == i + 1 + si * n0);
+                            debug_assert!(id_val == (i + 1 + si * n0) as i32);
                         }
                     }
                 }
                 unmatches.sort_by(|&i, &j| {
                     occs[i]
-                        .get_cost(id_box, i + 1 + si * n0)
-                        .cmp(&occs[j].get_cost(id_box, j + 1 + si * n0))
+                        .get_cost(id_box, (i + 1 + si * n0) as i32)
+                        .cmp(&occs[j].get_cost(id_box, (j + 1 + si * n0) as i32))
                 });
                 for oi in unmatches {
                     let occ = &occs[oi];
@@ -4487,11 +4485,7 @@ mod solver {
                 occs[1][oi1].write_id(&mut id_field[1], 0);
             }
         }
-        fn can_delete(
-            silhouette: &Silhouette,
-            id_box: &[Vec<Vec<usize>>],
-            occ: &Occupancy,
-        ) -> bool {
+        fn can_delete(silhouette: &Silhouette, id_box: &[Vec<Vec<i32>>], occ: &Occupancy) -> bool {
             for (z, y, x) in occ.points() {
                 let occ_id = id_box[z][y][x];
                 if silhouette.zy[z][y] && silhouette.zx[z][x] {
@@ -4506,7 +4500,7 @@ mod solver {
             }
             true
         }
-        fn output(&self, id_field: Vec<Vec<Vec<Vec<usize>>>>) {
+        fn output(&self, id_field: Vec<Vec<Vec<Vec<i32>>>>) {
             if unsafe { !EVAL } {
                 let mut st = BTreeMap::new();
                 st.insert(0, 0);
@@ -4601,7 +4595,7 @@ mod solver {
                 println!("{}", score);
             }
         }
-        fn debug_id_field(&self, id_field: &[Vec<Vec<Vec<usize>>>]) {
+        fn debug_id_field(&self, id_field: &[Vec<Vec<Vec<i32>>>]) {
             if !cfg!(debug_assertions) {
                 return;
             }
@@ -4681,7 +4675,7 @@ mod solver {
         }
         pub fn solve(&self) {
             let state = State::new(&self.silhouettes, self.d, &self.start_time);
-            self.debug_id_field(&state.id_fields);
+            self.debug_id_field(&state.id_field);
             let mut occs = state.occupancies();
             self.debug_occupancies(&occs);
             let (mut id_field, matches) = Self::max_match(&mut occs, self.d);
