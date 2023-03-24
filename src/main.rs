@@ -2513,18 +2513,22 @@ mod suffix_array {
 }
 use suffix_array::ToSuffixArray;
 
-mod max_flow {
+mod flow {
+    use crate::change_min_max::ChangeMinMax;
+    use std::cmp::Reverse;
+    use std::collections::BinaryHeap;
     #[derive(Clone, Copy)]
     pub struct Edge {
         pub to: usize,
         pub rev_idx: usize, // index of paired edge at node "to".
         pub capacity: i64,  // - inf <= flow <= capacity
         pub flow: i64,      // flow can be negative.
+        pub cost: i64,      // for min-cost flow
     }
-    pub struct MaxFlow {
+    pub struct Flow {
         pub g: Vec<Vec<Edge>>,
     }
-    impl MaxFlow {
+    impl Flow {
         pub fn new(n: usize) -> Self {
             Self { g: vec![vec![]; n] }
         }
@@ -2535,6 +2539,7 @@ mod max_flow {
                 rev_idx,
                 capacity,
                 flow: 0,
+                cost: 0,
             });
             let rev_idx = self.g[from].len() - 1;
             self.g[to].push(Edge {
@@ -2542,6 +2547,25 @@ mod max_flow {
                 rev_idx,
                 capacity: 0,
                 flow: 0,
+                cost: 0,
+            });
+        }
+        pub fn add_cost_edge(&mut self, from: usize, to: usize, capacity: i64, cost: i64) {
+            let rev_idx = self.g[to].len();
+            self.g[from].push(Edge {
+                to,
+                rev_idx,
+                capacity,
+                flow: 0,
+                cost,
+            });
+            let rev_idx = self.g[from].len() - 1;
+            self.g[to].push(Edge {
+                to: from,
+                rev_idx,
+                capacity: 0,
+                flow: 0,
+                cost: -cost,
             });
         }
         fn bfs(g: &[Vec<Edge>], source: usize) -> Vec<Option<usize>> {
@@ -2618,9 +2642,63 @@ mod max_flow {
             }
             flow
         }
+        pub fn min_cost_flow(&mut self, source: usize, sink: usize, mut flow: i64) -> Option<i64> {
+            let mut min_cost = 0;
+            let mut h = vec![0; self.g.len()];
+            let mut dist = vec![None; self.g.len()];
+            let mut prev = vec![None; self.g.len()];
+            while flow > 0 {
+                let mut que = BinaryHeap::new();
+                que.push((Reverse(0), source));
+                dist.iter_mut().for_each(|dist| *dist = None);
+                dist[source] = Some(0);
+                while let Some((Reverse(d), v)) = que.pop() {
+                    if dist[v].unwrap() != d {
+                        continue;
+                    }
+                    for (ei, e) in self.g[v].iter().enumerate() {
+                        if e.flow >= e.capacity {
+                            continue;
+                        }
+                        let nd = d + e.cost + h[v] - h[e.to];
+                        if dist[e.to].chmin(nd) {
+                            prev[e.to] = Some((v, ei));
+                            que.push((Reverse(nd), e.to));
+                        }
+                    }
+                }
+                dist[sink]?;
+                h.iter_mut().zip(dist.iter()).for_each(|(h, d)| {
+                    if let Some(d) = d {
+                        *h += d;
+                    }
+                });
+                let mut delta_flow = flow;
+                {
+                    let mut v = sink;
+                    while let Some((pv, pei)) = prev[v] {
+                        let e = &self.g[pv][pei];
+                        delta_flow.chmin(e.capacity - e.flow);
+                        v = pv;
+                    }
+                }
+                flow -= delta_flow;
+                min_cost += delta_flow * h[sink];
+                {
+                    let mut v = sink;
+                    while let Some((pv, pei)) = prev[v] {
+                        self.g[pv][pei].flow += delta_flow;
+                        let rev_idx = self.g[pv][pei].rev_idx;
+                        self.g[v][rev_idx].flow -= delta_flow;
+                        v = pv;
+                    }
+                }
+            }
+            Some(min_cost)
+        }
     }
 }
-use max_flow::MaxFlow;
+use flow::Flow;
 
 mod convolution {
     // https://github.com/atcoder/ac-library/blob/master/atcoder/convolution.hpp
@@ -3228,6 +3306,7 @@ mod occupancy {
     pub struct Occupancy {
         field: Vec<u64>,
         range: OccuRange,
+        cost: Option<i64>,
     }
     const BITWIDTH: usize = 64;
     impl Occupancy {
@@ -3236,6 +3315,7 @@ mod occupancy {
             Self {
                 field: vec![0; sz],
                 range,
+                cost: None,
             }
         }
         pub fn new(id_fields: &[Vec<Vec<usize>>], target_id: usize, range: OccuRange) -> Self {
@@ -3251,6 +3331,42 @@ mod occupancy {
                 }
             }
             ret
+        }
+        pub fn get_cost(&mut self, id_box: &[Vec<Vec<usize>>], own_id: usize) -> i64 {
+            let d = id_box.len();
+            if let Some(cost) = self.cost {
+                return cost;
+            }
+            let mut norm = 0;
+            let mut sum_other = 0;
+            for (oz, oy, ox) in self.points() {
+                #[allow(clippy::needless_range_loop)]
+                for z in 0..d {
+                    let id = id_box[z][oy][ox];
+                    if (id == 0) || (id == own_id) {
+                        continue;
+                    }
+                    sum_other += 1;
+                }
+                for y in 0..d {
+                    let id = id_box[oz][y][ox];
+                    if (id == 0) || (id == own_id) {
+                        continue;
+                    }
+                    sum_other += 1;
+                }
+                for x in 0..d {
+                    let id = id_box[oz][oy][x];
+                    if (id == 0) || (id == own_id) {
+                        continue;
+                    }
+                    sum_other += 1;
+                }
+                norm += 1;
+            }
+            let cost = sum_other / norm;
+            self.cost = Some(cost);
+            cost
         }
         pub fn get_range(&self) -> &OccuRange {
             &self.range
@@ -3454,6 +3570,7 @@ mod occupancy {
             let ret = self.rot_match(other);
             if cfg!(debug_assertions) && ret {
                 debug_assert!(self.get_range().volume() == other.get_range().volume());
+                debug_assert!(self.eff_size() == other.eff_size());
             }
             ret
         }
@@ -3469,6 +3586,7 @@ mod occupancy {
             for (z, y, x) in rhs.points() {
                 ret.set(z, y, x);
             }
+            debug_assert!(ret.eff_size() == self.eff_size() + rhs.eff_size());
             ret
         }
     }
@@ -3608,7 +3726,7 @@ mod occupancy {
 }
 mod state {
     use crate::{
-        max_flow::MaxFlow,
+        flow::Flow,
         occupancy::{OccuRange, Occupancy},
         ChangeMinMax, CoordinateCompress, MoveDelta,
     };
@@ -3665,7 +3783,7 @@ mod state {
                         }
                     }
                 }
-                let mut mf = MaxFlow::new(d * d * d + 2);
+                let mut mf = Flow::new(d * d * d + 2);
                 let src = d * d * d;
                 let dst = src + 1;
                 let to_1dim = |z: usize, y: usize, x: usize| ((z * d) + y) * d + x;
@@ -3784,7 +3902,8 @@ mod state {
             state
         }
         fn refine(state: &State) -> Option<State> {
-            let occs = state.occupancies();
+            let d = state.id_fields[0].len();
+            let mut occs = state.occupancies();
             // split parity, and search nearest pair.
             let mut splits = vec![]; // [sil, grp, num]
             let mut all_nears = vec![]; // [sil, all_occ, near-occ]
@@ -3815,6 +3934,7 @@ mod state {
                         let occ1 = &occs[si][oi1];
                         //let e1 = encs[si][1][&oi1];
                         let merge_occ = occ0.clone() + occ1.clone();
+                        debug_assert!(merge_occ.eff_size() == occ0.eff_size() + occ1.eff_size());
                         let mut is_new = true;
                         for (mi, al_merge_occ) in merge_occs.iter().enumerate() {
                             if &merge_occ == al_merge_occ {
@@ -3844,6 +3964,32 @@ mod state {
             }
             debug_assert!(merge_memo.iter().all(|memo| memo.len() == 2));
             debug_assert!(merge_occs.len() == merge_memo.len());
+            for mi in (0..merge_memo.len()).rev() {
+                if mi >= merge_memo.len() {
+                    continue;
+                }
+                if merge_memo[mi][0].is_empty() || merge_memo[mi][1].is_empty() {
+                    merge_occs.remove(mi);
+                    merge_memo.remove(mi);
+                }
+            }
+            if merge_memo.is_empty() {
+                return None;
+            }
+            debug_assert!(
+                merge_occs.iter().map(|occ| occ.eff_size()).max().unwrap()
+                    <= state
+                        .id_fields
+                        .iter()
+                        .map(|id_box| id_box
+                            .iter()
+                            .map(|id_plane| id_plane
+                                .iter()
+                                .map(|id_line| id_line.iter().filter(|&&id_val| id_val > 0).count())
+                                .sum::<usize>())
+                            .sum::<usize>())
+                        .sum::<usize>()
+            );
             if cfg!(debug_assertions) {
                 for memo in &merge_memo {
                     for (oi00, oi01) in memo[0].iter().copied() {
@@ -3868,10 +4014,12 @@ mod state {
             let num_merge = merge_occs.len();
             let src = num_even.iter().sum::<usize>() + num_pair.iter().sum::<usize>() + num_merge;
             let dst = src + 1;
-            let mut mf = MaxFlow::new(dst + 1);
+            let mut maxf = Flow::new(dst + 1);
+            let mut minf = Flow::new(dst + 1);
             {
                 for i in 0..num_even[0] {
-                    mf.add_edge(src, i, 1);
+                    minf.add_cost_edge(src, i, 1, 0);
+                    maxf.add_edge(src, i, 1);
                 }
             }
             {
@@ -3881,7 +4029,8 @@ mod state {
                         debug_assert!(encs[0][0].contains_key(&oi00));
                         debug_assert!(encs[0][1].contains_key(&oi01));
                         let ei00 = encs[0][0][&oi00];
-                        mf.add_edge(ei00, p0, 1);
+                        minf.add_cost_edge(ei00, p0, 1, 0);
+                        maxf.add_edge(ei00, p0, 1);
                         p0 += 1;
                     }
                 }
@@ -3893,19 +4042,52 @@ mod state {
                     for &(oi00, oi01) in &memo[0] {
                         debug_assert!(encs[0][0].contains_key(&oi00));
                         debug_assert!(encs[0][1].contains_key(&oi01));
-                        mf.add_edge(p0, num_even[0] + num_pair[0] + mi, 1);
+                        let cost0 = {
+                            let occ = &mut occs[0][oi00];
+                            let (z, y, x) = occ.points()[0];
+                            let id = state.id_fields[0][z][y][x];
+                            debug_assert!(id > 0);
+                            occ.get_cost(&state.id_fields[0], id)
+                        };
+                        let cost1 = {
+                            let occ = &mut occs[0][oi01];
+                            let (z, y, x) = occ.points()[0];
+                            let id = state.id_fields[0][z][y][x];
+                            debug_assert!(id > 0);
+                            occ.get_cost(&state.id_fields[0], id)
+                        };
+                        let cost = cost0 + cost1;
+                        minf.add_cost_edge(p0, num_even[0] + num_pair[0] + mi, 1, cost);
+                        maxf.add_edge(p0, num_even[0] + num_pair[0] + mi, 1);
                         p0 += 1;
                     }
                 }
                 debug_assert!(p0 == num_even[0] + num_pair[0]);
             }
+            // center
             {
                 let mut p1 = num_even[0] + num_pair[0] + num_merge;
                 for (mi, memo) in merge_memo.iter().enumerate() {
                     for &(oi11, oi10) in &memo[1] {
                         debug_assert!(encs[1][0].contains_key(&oi10));
                         debug_assert!(encs[1][1].contains_key(&oi11));
-                        mf.add_edge(num_even[0] + num_pair[0] + mi, p1, 1);
+                        let cost0 = {
+                            let occ = &mut occs[1][oi10];
+                            let (z, y, x) = occ.points()[0];
+                            let id = state.id_fields[1][z][y][x];
+                            debug_assert!(id > 0);
+                            occ.get_cost(&state.id_fields[1], id)
+                        };
+                        let cost1 = {
+                            let occ = &mut occs[1][oi11];
+                            let (z, y, x) = occ.points()[0];
+                            let id = state.id_fields[1][z][y][x];
+                            debug_assert!(id > 0);
+                            occ.get_cost(&state.id_fields[1], id)
+                        };
+                        let cost = cost0 + cost1;
+                        minf.add_cost_edge(num_even[0] + num_pair[0] + mi, p1, 1, cost);
+                        maxf.add_edge(num_even[0] + num_pair[0] + mi, p1, 1);
                         p1 += 1;
                     }
                 }
@@ -3918,7 +4100,13 @@ mod state {
                         debug_assert!(encs[1][0].contains_key(&oi10));
                         debug_assert!(encs[1][1].contains_key(&oi11));
                         let ei10 = encs[1][0][&oi10];
-                        mf.add_edge(
+                        minf.add_cost_edge(
+                            p1,
+                            num_even[0] + num_pair[0] + num_merge + num_pair[1] + ei10,
+                            1,
+                            0,
+                        );
+                        maxf.add_edge(
                             p1,
                             num_even[0] + num_pair[0] + num_merge + num_pair[1] + ei10,
                             1,
@@ -3930,20 +4118,26 @@ mod state {
             }
             {
                 for ei10 in 0..num_even[1] {
-                    mf.add_edge(
+                    minf.add_cost_edge(
+                        num_even[0] + num_pair[0] + num_merge + num_pair[1] + ei10,
+                        dst,
+                        1,
+                        0,
+                    );
+                    maxf.add_edge(
                         num_even[0] + num_pair[0] + num_merge + num_pair[1] + ei10,
                         dst,
                         1,
                     );
                 }
             }
-            let flow = mf.max_flow(src, dst);
+            let flow = maxf.max_flow(src, dst);
             if flow == 0 {
                 return None;
             }
+            assert!(minf.min_cost_flow(src, dst, flow).is_some());
 
             // flow any.
-            let d = occs[0][0].get_range().d();
             let mut id_field = vec![vec![vec![vec![0; d]; d]; d]; 2];
             let mut id_cnt = 1;
             for (id_box, occs) in id_field.iter_mut().zip(occs.iter()) {
@@ -3960,7 +4154,7 @@ mod state {
             let mut p1_base = 0;
             for (mi, memo) in merge_memo.iter().enumerate() {
                 let vmi = num_even[0] + num_pair[0] + mi;
-                for to1 in mf.g[vmi].iter() {
+                for to1 in minf.g[vmi].iter() {
                     if to1.to < vmi {
                         continue;
                     }
@@ -3973,14 +4167,14 @@ mod state {
                     if (!remains[1][oi10]) || (!remains[1][oi11]) {
                         continue;
                     }
-                    for from0 in mf.g[vmi].iter() {
+                    for from0 in minf.g[vmi].iter() {
                         if from0.to > vmi {
                             continue;
                         }
-                        if mf.g[from0.to][from0.rev_idx].flow == 0 {
+                        if minf.g[from0.to][from0.rev_idx].flow == 0 {
                             continue;
                         }
-                        if mf.g[from0.to][from0.rev_idx].to != vmi {
+                        if minf.g[from0.to][from0.rev_idx].to != vmi {
                             continue;
                         }
                         let p0 = from0.to - num_even[0] - p0_base;
@@ -4102,7 +4296,7 @@ mod solver {
     static mut EVAL: bool = false;
     use crate::occupancy::Occupancy;
     use crate::state::*;
-    use crate::MaxFlow;
+    use crate::Flow;
     use std::collections::{BTreeMap, BTreeSet};
     use std::time::Instant;
     pub struct Solver {
@@ -4133,7 +4327,7 @@ mod solver {
         }
         #[allow(clippy::type_complexity)]
         fn max_match(
-            occs: &[Vec<Occupancy>],
+            occs: &mut [Vec<Occupancy>],
             d: usize,
         ) -> (Vec<Vec<Vec<Vec<usize>>>>, Vec<BTreeMap<usize, usize>>) {
             let n0 = occs[0].len();
@@ -4148,30 +4342,48 @@ mod solver {
                 }
             }
 
-            let mut mf = MaxFlow::new(n0 + n1 + 2);
+            let mut minf = Flow::new(n0 + n1 + 2);
+            let mut maxf = Flow::new(n0 + n1 + 2);
             let src = n0 + n1;
             let dst = src + 1;
-            for (i0, o0) in occs[0].iter().enumerate() {
-                for (i1, o1) in occs[1].iter().enumerate() {
-                    if o0 != o1 {
+            for i0 in 0..n0 {
+                for i1 in 0..n1 {
+                    if occs[0][i0] != occs[1][i1] {
                         continue;
                     }
-                    mf.add_edge(i0, n0 + i1, 1);
+                    let cost0 = {
+                        let occ = &mut occs[0][i0];
+                        let (z, y, x) = occ.points()[0];
+                        let id = id_field[0][z][y][x];
+                        debug_assert!(id > 0);
+                        occ.get_cost(&id_field[0], id)
+                    };
+                    let cost1 = {
+                        let occ = &mut occs[1][i1];
+                        let (z, y, x) = occ.points()[0];
+                        let id = id_field[1][z][y][x];
+                        debug_assert!(id > 0);
+                        occ.get_cost(&id_field[1], id)
+                    };
+                    minf.add_cost_edge(i0, n0 + i1, 1, cost0 + cost1);
+                    maxf.add_edge(i0, n0 + i1, 1);
                 }
             }
             for i0 in 0..occs[0].len() {
-                mf.add_edge(src, i0, 1);
+                minf.add_cost_edge(src, i0, 1, 0);
+                maxf.add_edge(src, i0, 1);
             }
             for i1 in 0..occs[1].len() {
-                mf.add_edge(n0 + i1, dst, 1);
+                minf.add_cost_edge(n0 + i1, dst, 1, 0);
+                maxf.add_edge(n0 + i1, dst, 1);
             }
-            let _f = mf.max_flow(src, dst);
+            let _ = minf.min_cost_flow(src, dst, maxf.max_flow(src, dst));
 
             let mut st = vec![BTreeMap::new(); 2];
 
             for (i0, _o0) in occs[0].iter().enumerate() {
                 let id0_val = i0 + 1;
-                for e in mf.g[i0].iter() {
+                for e in minf.g[i0].iter() {
                     if e.flow == 0 {
                         continue;
                     }
@@ -4357,20 +4569,17 @@ mod solver {
                         }
                     }
                 }
-                let mut score = 0.0;
+                let mut scores = vec![0.0; 2];
                 let mut isos = vec![BTreeSet::new(); 2];
-                for (&id0, &v) in cnt[0].iter() {
-                    if !cnt[1].contains_key(&id0) {
-                        score += v as f64;
-                        isos[0].insert(id0);
+                for si in 0..2 {
+                    for (&id_val, &v) in cnt[si].iter() {
+                        if !cnt[1 - si].contains_key(&id_val) {
+                            scores[si] += v as f64;
+                            isos[si].insert(id_val);
+                        }
                     }
                 }
-                for (&id1, &v) in cnt[1].iter() {
-                    if !cnt[0].contains_key(&id1) {
-                        score += v as f64;
-                        isos[1].insert(id1);
-                    }
-                }
+                let mut score = scores.into_iter().sum::<f64>();
                 for (cnt, iso) in cnt.iter_mut().zip(isos.iter()) {
                     for iso in iso.iter() {
                         cnt.remove(iso);
@@ -4464,9 +4673,9 @@ mod solver {
         pub fn solve(&self) {
             let state = State::new(&self.silhouettes, self.d, &self.start_time);
             self.debug_id_field(&state.id_fields);
-            let occs = state.occupancies();
+            let mut occs = state.occupancies();
             self.debug_occupancies(&occs);
-            let (mut id_field, matches) = Self::max_match(&occs, self.d);
+            let (mut id_field, matches) = Self::max_match(&mut occs, self.d);
             self.debug_id_field(&id_field);
             self.remove_useless(&mut id_field, occs, matches);
             self.output(id_field);
