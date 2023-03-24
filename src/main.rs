@@ -3511,7 +3511,7 @@ mod occupancy {
                     for _ in 0..4 - c {
                         ref1.rot_z_dir(false);
                     }
-                    assert!(ref0.complete_match(&ref1));
+                    assert!(ref0.move_match(&ref1));
                 }
             }
         }
@@ -3533,7 +3533,7 @@ mod occupancy {
                     for _ in 0..4 - c {
                         ref1.rot_y_dir(false);
                     }
-                    assert!(ref0.complete_match(&ref1));
+                    assert!(ref0.move_match(&ref1));
                 }
             }
         }
@@ -3555,7 +3555,7 @@ mod occupancy {
                     for _ in 0..4 - c {
                         ref1.rot_x_dir(false);
                     }
-                    assert!(ref0.complete_match(&ref1));
+                    assert!(ref0.move_match(&ref1));
                 }
             }
         }
