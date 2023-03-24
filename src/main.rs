@@ -4431,14 +4431,16 @@ mod solver {
         fn remove_useless(
             &self,
             id_field: &mut [Vec<Vec<Vec<usize>>>],
-            occs: Vec<Vec<Occupancy>>,
+            mut occs: Vec<Vec<Occupancy>>,
             matches: Vec<BTreeMap<usize, usize>>,
         ) {
+            let n0 = occs[0].len();
             // delete isolated box, if possible.
-            for ((id_box, occs), (matches, silhouette)) in id_field
+            for (si, ((id_box, occs), (matches, silhouette))) in id_field
                 .iter_mut()
-                .zip(occs.iter())
+                .zip(occs.iter_mut())
                 .zip(matches.iter().zip(self.silhouettes.iter()))
+                .enumerate()
             {
                 let mut unmatches = vec![];
                 for (oi, _occ) in occs.iter().enumerate() {
@@ -4447,13 +4449,24 @@ mod solver {
                     }
                     unmatches.push(oi);
                 }
-                unmatches.sort_by(|&i, &j| occs[i].eff_size().cmp(&occs[j].eff_size()));
+                if cfg!(debug_assertions) {
+                    for (i, occ) in occs.iter_mut().enumerate() {
+                        if unmatches.iter().any(|&oi| oi == i) {
+                            let (z, y, x) = occ.points()[0];
+                            let id_val = id_box[z][y][x];
+                            debug_assert!(id_val == i + 1 + si * n0);
+                        }
+                    }
+                }
+                unmatches.sort_by(|&i, &j| {
+                    occs[i]
+                        .get_cost(id_box, i + 1 + si * n0)
+                        .cmp(&occs[j].get_cost(id_box, j + 1 + si * n0))
+                });
                 for oi in unmatches {
                     let occ = &occs[oi];
                     if Self::can_delete(silhouette, id_box, occ) {
-                        for (z, y, x) in occ.points() {
-                            id_box[z][y][x] = 0;
-                        }
+                        occ.write_id(id_box, 0);
                     }
                 }
             }
@@ -4462,7 +4475,7 @@ mod solver {
             for (&oi0, &oi1) in matches[0].iter() {
                 match_pairs.push((oi0, oi1));
             }
-            match_pairs.sort_by(|p0, p1| occs[0][p0.0].eff_size().cmp(&occs[0][p1.0].eff_size()));
+            match_pairs.sort_by_cached_key(|&(oi0, _oi1)| occs[0][oi0].eff_size());
             for (oi0, oi1) in match_pairs {
                 if !Self::can_delete(&self.silhouettes[0], &id_field[0], &occs[0][oi0]) {
                     continue;
@@ -4470,12 +4483,8 @@ mod solver {
                 if !Self::can_delete(&self.silhouettes[1], &id_field[1], &occs[1][oi1]) {
                     continue;
                 }
-                for (z, y, x) in occs[0][oi0].points() {
-                    id_field[0][z][y][x] = 0;
-                }
-                for (z, y, x) in occs[1][oi1].points() {
-                    id_field[1][z][y][x] = 0;
-                }
+                occs[0][oi0].write_id(&mut id_field[0], 0);
+                occs[1][oi1].write_id(&mut id_field[1], 0);
             }
         }
         fn can_delete(
