@@ -3301,142 +3301,37 @@ mod occupancy {
             ret
         }
     }
-
-    trait IntoRotIterator {
-        fn into_rot_iterator(self) -> RotIterator;
-    }
-    impl IntoRotIterator for RangeInclusive<usize> {
-        fn into_rot_iterator(self) -> RotIterator {
-            RotIterator {
-                nxt: *self.start(),
-                lo: *self.start(),
-                hi: *self.end(),
-                dir: true,
-                fin: false,
-            }
-        }
-    }
     #[derive(Clone, Copy)]
-    struct RotIterator {
-        nxt: usize,
-        lo: usize,
-        hi: usize,
-        dir: bool,
-        fin: bool,
+    struct RotDir {
+        to: usize,
+        sign: bool,
     }
-    impl RotIterator {
-        fn new(lo: usize, hi: usize) -> Self {
-            debug_assert!(lo <= hi);
-            Self {
-                nxt: lo,
-                lo,
-                hi,
-                dir: true,
-                fin: false,
-            }
-        }
-        fn to_reverse(&self) -> Self {
-            let mut ret = self.clone();
-            if self.dir {
-                ret.dir = false;
-                ret.nxt = self.hi;
-            } else {
-                ret.dir = true;
-                ret.nxt = self.lo;
-            }
-            ret
-        }
-        fn init(&mut self) {
-            self.fin = false;
-            if self.dir {
-                self.nxt = self.lo;
-            } else {
-                self.nxt = self.hi;
-            }
-        }
-        fn len(&self) -> usize {
-            self.hi - self.lo + 1
-        }
-    }
-    impl Iterator for RotIterator {
-        type Item = usize;
-        fn next(&mut self) -> Option<Self::Item> {
-            if self.fin {
-                return None;
-            }
-            if self.dir {
-                // rising
-                if self.nxt >= self.hi {
-                    self.fin = true;
-                    Some(self.nxt)
-                } else {
-                    self.nxt += 1;
-                    Some(self.nxt - 1)
-                }
-            } else {
-                // falling
-                if self.nxt <= self.lo {
-                    self.fin = true;
-                    Some(self.nxt)
-                } else {
-                    self.nxt -= 1;
-                    Some(self.nxt + 1)
-                }
-            }
-        }
-    }
-    mod rot_iterator_tests {
-        use super::*;
-        #[test]
-        fn rot_iterator_test() {
-            let d = 10usize;
-            let mut rot_iters = vec![(0..=d).into_rot_iterator()];
-            for _ in 0..3 {
-                let nxt = rot_iters.last().unwrap().to_reverse();
-                rot_iters.push(nxt);
-            }
-            for (r, rot_iter) in rot_iters.into_iter().enumerate() {
-                for (i, val) in rot_iter.enumerate() {
-                    if r % 2 == 0 {
-                        assert_eq!(i, val);
-                    } else {
-                        assert_eq!(d - i, val);
-                    }
-                }
-            }
+    impl RotDir {
+        fn new(to: usize) -> Self {
+            Self { to, sign: true }
         }
     }
     #[derive(Clone)]
-    struct Range3d {
-        ziter: RotIterator,
-        yiter: RotIterator,
-        xiter: RotIterator,
+    struct RotDir3d {
+        dirs: Vec<RotDir>,
     }
-    impl Range3d {
-        fn new(range: &OccuRange) -> Self {
+    impl RotDir3d {
+        fn new() -> Self {
             Self {
-                ziter: (0..=(range.zsize() - 1)).into_rot_iterator(),
-                yiter: (0..=(range.ysize() - 1)).into_rot_iterator(),
-                xiter: (0..=(range.xsize() - 1)).into_rot_iterator(),
+                dirs: (0..3).map(RotDir::new).collect::<Vec<_>>(),
             }
         }
-        fn to_rot_x(&self) -> Self {
-            let mut ret = self.clone();
-            std::mem::swap(&mut ret.ziter, &mut ret.yiter);
-            ret.yiter = ret.yiter.to_reverse();
-            ret
+        fn rot_z(&mut self) {
+            (self.dirs[1], self.dirs[2]) = (self.dirs[2], self.dirs[1]);
+            self.dirs[2].sign = !self.dirs[2].sign;
         }
-        fn to_rot_y(&self) -> Self {
-            let mut ret = self.clone();
-            std::mem::swap(&mut ret.xiter, &mut ret.ziter);
-            ret.ziter = ret.ziter.to_reverse();
-            ret
+        fn rot_y(&mut self) {
+            (self.dirs[2], self.dirs[0]) = (self.dirs[0], self.dirs[2]);
+            self.dirs[0].sign = !self.dirs[0].sign;
         }
-        fn to_rot_z(&self) -> Self {
-            let mut ret = self.clone();
-            std::mem::swap(&mut ret.yiter, &mut ret.xiter);
-            ret.xiter = ret.xiter.to_reverse();
-            ret
+        fn rot_x(&mut self) {            
+            (self.dirs[0], self.dirs[1]) = (self.dirs[1], self.dirs[0]);
+            self.dirs[1].sign = !self.dirs[1].sign;
         }
     }
     #[derive(Clone)]
@@ -3651,20 +3546,45 @@ mod occupancy {
             }
             *self = ret;
         }
-        fn mov_match(&self, srange3d: &Range3d, other: &Self, orange3d: &Range3d) -> bool {
-            if other.get_range().zsize() != orange3d.ziter.len() {
+        fn move_match2(&self, other: &Self, rot01: &RotDir3d) -> bool {
+            let range0 = self.get_range();
+            let range1 = other.get_range();
+            let range1 = (0..3)
+                .map(|d| match rot01.dirs[d].to {
+                    0 => range1.zsize(),
+                    1 => range1.ysize(),
+                    2 => range1.xsize(),
+                    _ => unreachable!(),
+                })
+                .collect::<Vec<_>>();
+            if (range0.zsize() != range1[0])
+                || (range0.ysize() != range1[1])
+                || (range0.xsize() != range1[2])
+            {
                 return false;
             }
-            if other.get_range().ysize() != orange3d.yiter.len() {
-                return false;
-            }
-            if other.get_range().xsize() != orange3d.xiter.len() {
-                return false;
-            }
-            for (rz0, rz1) in srange3d.ziter.zip(orange3d.ziter) {
-                for (ry0, ry1) in srange3d.yiter.zip(orange3d.yiter) {
-                    for (rx0, rx1) in srange3d.xiter.zip(orange3d.xiter) {
-                        if self.get_rel(rz0, ry0, rx0) != other.get_rel(rz1, ry1, rx1) {
+            let mut rzyx1 = [0; 3];
+            for rz0 in 0..range0.zsize() {
+                rzyx1[rot01.dirs[0].to] = if rot01.dirs[0].sign {
+                    rz0
+                } else {
+                    range0.zsize() - 1 - rz0
+                };
+                for ry0 in 0..range0.ysize() {
+                    rzyx1[rot01.dirs[1].to] = if rot01.dirs[1].sign {
+                        ry0
+                    } else {
+                        range0.ysize() - 1 - ry0
+                    };
+                    for rx0 in 0..range0.xsize() {
+                        rzyx1[rot01.dirs[2].to] = if rot01.dirs[2].sign {
+                            rx0
+                        } else {
+                            range0.xsize() - 1 - rx0
+                        };
+                        if self.get_rel(rz0, ry0, rx0)
+                            != other.get_rel(rzyx1[0], rzyx1[1], rzyx1[2])
+                        {
                             return false;
                         }
                     }
@@ -3673,11 +3593,6 @@ mod occupancy {
             true
         }
         fn rot_z_match(&self, other: &Self) -> bool {
-            let mut rots = vec![Range3d::new(self.get_range())];
-            for _ in 0..3 {
-                let nrot = rots.last().unwrap().to_rot_z();
-                rots.push(nrot);
-            }
             let mut re = other.clone();
             if self.move_match(&re) {
                 return true;
@@ -3690,10 +3605,69 @@ mod occupancy {
             }
             false
         }
+        fn rot_z_match2(&self, other: &Self, rot01: &mut RotDir3d) -> bool {
+            if self.move_match2(other, rot01) {
+                return true;
+            }
+            for _ in 0..3 {
+                rot01.rot_z();
+                if self.move_match2(other, rot01) {
+                    return true;
+                }
+            }
+            false
+        }
+        fn rot_match2(&self, other: &Self) -> bool {
+            let mut rot01 = RotDir3d::new();
+            for _ in 0..4 {
+                if self.move_match2(other, &rot01) {
+                    return true;
+                }
+                rot01.rot_z();
+            }
+            rot01.rot_x();
+            for _ in 0..4 {
+                if self.move_match2(other, &rot01) {
+                    return true;
+                }
+                rot01.rot_y();
+            }
+            rot01.rot_z();
+            for _ in 0..4 {
+                if self.move_match2(other, &rot01) {
+                    return true;
+                }
+                rot01.rot_x();
+            }
+            rot01.rot_y();
+            for _ in 0..4 {
+                if self.move_match2(other, &rot01) {
+                    return true;
+                }
+                rot01.rot_z();
+            }
+            rot01.rot_x();
+            for _ in 0..4 {
+                if self.move_match2(other, &rot01) {
+                    return true;
+                }
+                rot01.rot_y();
+            }
+            rot01.rot_z();
+            for _ in 0..4 {
+                if self.move_match2(other, &rot01) {
+                    return true;
+                }
+                rot01.rot_x();
+            }
+            rot01.rot_y();
+            false
+        }
         fn rot_match(&self, other: &Self) -> bool {
+            let mut ret = false;
             let mut re = other.clone();
             if self.rot_z_match(&re) {
-                return true;
+                ret = true;
             }
             for dir in 0..5 {
                 if dir % 2 == 0 {
@@ -3702,49 +3676,30 @@ mod occupancy {
                     re.rot_y();
                 }
                 if self.rot_z_match(&re) {
-                    return true;
+                    ret = true;
                 }
             }
-            false
+            assert!(ret == self.rot_match2(other));
+            ret
         }
         pub fn move_match(&self, other: &Self) -> bool {
             if self.range.zsize() != other.range.zsize() {
-                debug_assert!(!self.mov_match(
-                    &Range3d::new(self.get_range()),
-                    other,
-                    &Range3d::new(other.get_range())
-                ));
+                debug_assert!(!self.move_match2(other, &RotDir3d::new()));
                 return false;
             }
             if self.range.ysize() != other.range.ysize() {
-                debug_assert!(!self.mov_match(
-                    &Range3d::new(self.get_range()),
-                    other,
-                    &Range3d::new(other.get_range())
-                ));
+                debug_assert!(!self.move_match2(other, &RotDir3d::new()));
                 return false;
             }
             if self.range.xsize() != other.range.xsize() {
-                debug_assert!(!self.mov_match(
-                    &Range3d::new(self.get_range()),
-                    other,
-                    &Range3d::new(other.get_range())
-                ));
+                debug_assert!(!self.move_match2(other, &RotDir3d::new()));
                 return false;
             }
             if self.field != other.field {
-                debug_assert!(!self.mov_match(
-                    &Range3d::new(self.get_range()),
-                    other,
-                    &Range3d::new(other.get_range())
-                ));
+                debug_assert!(!self.move_match2(other, &RotDir3d::new()));
                 return false;
             }
-            debug_assert!(self.mov_match(
-                &Range3d::new(self.get_range()),
-                other,
-                &Range3d::new(other.get_range())
-            ));
+            debug_assert!(self.move_match2(other, &RotDir3d::new()));
             true
         }
         pub fn write_id(&self, id_box: &mut [Vec<Vec<i32>>], target_id: i32) {
@@ -3762,7 +3717,7 @@ mod occupancy {
     }
     impl PartialEq for Occupancy {
         fn eq(&self, other: &Self) -> bool {
-            let ret = self.rot_match(other);
+            let ret = self.rot_match2(other);
             if cfg!(debug_assertions) && ret {
                 debug_assert!(self.get_range().volume() == other.get_range().volume());
                 debug_assert!(self.eff_size() == other.eff_size());
@@ -3902,6 +3857,38 @@ mod occupancy {
                         _ => unreachable!(),
                     }
                     assert!(ref0.rot_match(&ref1));
+                }
+            }
+        }
+        fn test_rot2() {
+            let mut rand = XorShift64::new();
+            let d = 14;
+            for _ in 0..TEST_LOOP {
+                let zsize = 1 + rand.next_usize() % (d - 1);
+                let ysize = 1 + rand.next_usize() % (d - 1);
+                let xsize = 1 + rand.next_usize() % (d - 1);
+                let ref0 = create_occ(d, zsize, ysize, xsize, &mut rand);
+                let mut ref1 = {
+                    let mut ref1 = create_occ(d, zsize, ysize, xsize, &mut rand);
+                    while ref0.move_match(&ref1) {
+                        ref1 = create_occ(d, zsize, ysize, xsize, &mut rand);
+                    }
+                    ref1
+                };
+                for _ in 0..100 {
+                    match rand.next_u64() % 3 {
+                        0 => {
+                            ref1.rot_z();
+                        }
+                        1 => {
+                            ref1.rot_y();
+                        }
+                        2 => {
+                            ref1.rot_x();
+                        }
+                        _ => unreachable!(),
+                    }
+                    assert!(!ref0.rot_match(&ref1));
                 }
             }
         }
