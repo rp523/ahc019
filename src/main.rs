@@ -3329,7 +3329,7 @@ mod occupancy {
             (self.dirs[2], self.dirs[0]) = (self.dirs[0], self.dirs[2]);
             self.dirs[0].sign = !self.dirs[0].sign;
         }
-        fn rot_x(&mut self) {            
+        fn rot_x(&mut self) {
             (self.dirs[0], self.dirs[1]) = (self.dirs[1], self.dirs[0]);
             self.dirs[1].sign = !self.dirs[1].sign;
         }
@@ -3546,6 +3546,56 @@ mod occupancy {
             }
             *self = ret;
         }
+        fn merge_match2(&self, others: &[&Self], rot10: &RotDir3d) -> bool {
+            debug_assert!(self.eff_size() == others[0].eff_size() + others[1].eff_size());
+            let mrange = *others[0].get_range() + *others[1].get_range();
+            let range0 = self.get_range();
+            let size0 = (0..3)
+                .map(|d| match rot10.dirs[d].to {
+                    0 => range0.zsize(),
+                    1 => range0.ysize(),
+                    2 => range0.xsize(),
+                    _ => unreachable!(),
+                })
+                .collect::<Vec<_>>();
+            if (mrange.zsize() != size0[0])
+                || (mrange.ysize() != size0[1])
+                || (mrange.xsize() != size0[2])
+            {
+                return false;
+            }
+            for other in others {
+                let range1 = other.get_range();
+                let mut rzyx0 = [0; 3];
+                for rz1 in 0..range1.zsize() {
+                    rzyx0[rot10.dirs[0].to] = if rot10.dirs[0].sign {
+                        rz1 + (range1.zrange.0 - mrange.zrange.0)
+                    } else {
+                        mrange.zsize() - 1 - (rz1 + (range1.zrange.0 - mrange.zrange.0))
+                    };
+                    for ry1 in 0..range1.ysize() {
+                        rzyx0[rot10.dirs[1].to] = if rot10.dirs[1].sign {
+                            ry1 + (range1.yrange.0 - mrange.yrange.0)
+                        } else {
+                            mrange.ysize() - 1 - (ry1 + (range1.yrange.0 - mrange.yrange.0))
+                        };
+                        for rx1 in 0..range1.xsize() {
+                            rzyx0[rot10.dirs[2].to] = if rot10.dirs[2].sign {
+                                rx1 + (range1.xrange.0 - mrange.xrange.0)
+                            } else {
+                                mrange.xsize() - 1 - (rx1 + (range1.xrange.0 - mrange.xrange.0))
+                            };
+                            if other.get_rel(rz1, ry1, rx1)
+                                && (!self.get_rel(rzyx0[0], rzyx0[1], rzyx0[2]))
+                            {
+                                return false;
+                            }
+                        }
+                    }
+                }
+            }
+            true
+        }
         fn move_match2(&self, other: &Self, rot01: &RotDir3d) -> bool {
             let range0 = self.get_range();
             let range1 = other.get_range();
@@ -3618,6 +3668,9 @@ mod occupancy {
             false
         }
         fn rot_match2(&self, other: &Self) -> bool {
+            if self.eff_size() != other.eff_size() {
+                return false;
+            }
             let mut rot01 = RotDir3d::new();
             for _ in 0..4 {
                 if self.move_match2(other, &rot01) {
@@ -3661,6 +3714,55 @@ mod occupancy {
                 rot01.rot_x();
             }
             rot01.rot_y();
+            false
+        }
+        pub fn rot_merge_match2(&self, others: &[&Self]) -> bool {
+            if self.eff_size() != others[0].eff_size() + others[1].eff_size() {
+                return false;
+            }
+            let mut rot10 = RotDir3d::new();
+            for _ in 0..4 {
+                if self.merge_match2(others, &rot10) {
+                    return true;
+                }
+                rot10.rot_z();
+            }
+            rot10.rot_x();
+            for _ in 0..4 {
+                if self.merge_match2(others, &rot10) {
+                    return true;
+                }
+                rot10.rot_y();
+            }
+            rot10.rot_z();
+            for _ in 0..4 {
+                if self.merge_match2(others, &rot10) {
+                    return true;
+                }
+                rot10.rot_x();
+            }
+            rot10.rot_y();
+            for _ in 0..4 {
+                if self.merge_match2(others, &rot10) {
+                    return true;
+                }
+                rot10.rot_z();
+            }
+            rot10.rot_x();
+            for _ in 0..4 {
+                if self.merge_match2(others, &rot10) {
+                    return true;
+                }
+                rot10.rot_y();
+            }
+            rot10.rot_z();
+            for _ in 0..4 {
+                if self.merge_match2(others, &rot10) {
+                    return true;
+                }
+                rot10.rot_x();
+            }
+            rot10.rot_y();
             false
         }
         fn rot_match(&self, other: &Self) -> bool {
@@ -4114,15 +4216,9 @@ mod state {
                         };
                         let occ1 = &occs[si][oi1];
                         //let e1 = encs[si][1][&oi1];
-                        let merge_occ = occ0.clone() + occ1.clone();
-                        debug_assert!(merge_occ.eff_size() == occ0.eff_size() + occ1.eff_size());
                         let mut is_new = true;
                         for (mi, al_merge_occ) in merge_occs.iter().enumerate() {
-                            if &merge_occ == al_merge_occ {
-                                debug_assert!(
-                                    merge_occ.get_range().volume()
-                                        == al_merge_occ.get_range().volume()
-                                );
+                            if al_merge_occ.rot_merge_match2(&[occ0, occ1]) {
                                 if si == 0 {
                                     merge_memo[mi][si].push((oi0, oi1));
                                 } else {
@@ -4133,6 +4229,7 @@ mod state {
                             }
                         }
                         if is_new {
+                            let merge_occ = occ0.clone() + occ1.clone();
                             merge_occs.push(merge_occ);
                             if si == 0 {
                                 merge_memo.push(vec![vec![(oi0, oi1); 1], vec![]]);
