@@ -4775,7 +4775,8 @@ mod solver {
             }
             true
         }
-        fn output(&self, id_field: Vec<Vec<Vec<Vec<i32>>>>) {
+        fn output(&self, state: State) {
+            let id_field = state.id_field;
             if cfg!(debug_assertions) {
                 let mut cnt_2d = vec![vec![vec![vec![0; self.d]; self.d]; self.d]; 2];
                 for (id_box, cnt) in id_field.iter().zip(cnt_2d.iter_mut()) {
@@ -4951,15 +4952,18 @@ mod solver {
                 }
             }
         }
-        pub fn solve(&self) {
-            let state = State::new(&self.silhouettes, self.d);
+        fn refine(&self, state: &State) -> State {
             self.debug_id_field(&state.id_field);
             let mut occs = state.occupancies();
             self.debug_occupancies(&occs);
             let (mut id_field, matches) = Self::max_match(&mut occs, self.d);
             self.debug_id_field(&id_field);
             self.remove_useless(&mut id_field, occs, matches);
-            self.output(id_field);
+            State { id_field }
+        }
+        pub fn solve(&self) {
+            let state = self.refine(&State::new(&self.silhouettes, self.d));
+            self.output(state);
         }
     }
 }
