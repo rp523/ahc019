@@ -4054,7 +4054,7 @@ mod state {
         (-1, 0, 0),
     ];
     impl State {
-        pub fn new(silhouettes: &[Silhouette], d: usize, start_time: &Instant) -> Self {
+        pub fn new(silhouettes: &[Silhouette], d: usize) -> Self {
             let mut id_field = vec![vec![vec![vec![0; d]; d]; d]; 2];
             let mut cnt = 0;
             for (silhouette, id_box) in silhouettes.iter().zip(id_field.iter_mut()) {
@@ -4177,9 +4177,6 @@ mod state {
             // trial
             while let Some(next_state) = Self::refine(&state) {
                 state = next_state;
-                if start_time.elapsed().as_millis() > 4_000 {
-                    break;
-                }
             }
 
             state
@@ -4779,34 +4776,7 @@ mod solver {
             true
         }
         fn output(&self, id_field: Vec<Vec<Vec<Vec<i32>>>>) {
-            if unsafe { !EVAL } {
-                let mut st = BTreeMap::new();
-                st.insert(0, 0);
-                for bx in id_field.iter() {
-                    for plane in bx.iter() {
-                        for line in plane.iter() {
-                            for &val in line.iter() {
-                                st.insert(val, 0);
-                            }
-                        }
-                    }
-                }
-                for (i, (_, v)) in st.iter_mut().enumerate() {
-                    *v = i;
-                }
-                println!("{}", st.len() - 1);
-                for id_box in &id_field {
-                    for x in 0..self.d {
-                        for y in 0..self.d {
-                            for plane in id_box.iter() {
-                                let val = plane[y][x];
-                                print!("{} ", st[&val]);
-                            }
-                        }
-                    }
-                    println!();
-                }
-            } else {
+            if cfg!(debug_assertions) {
                 let mut cnt_2d = vec![vec![vec![vec![0; self.d]; self.d]; self.d]; 2];
                 for (id_box, cnt) in id_field.iter().zip(cnt_2d.iter_mut()) {
                     for (id_plane, cnt) in id_box.iter().zip(cnt.iter_mut()) {
@@ -4839,39 +4809,69 @@ mod solver {
                         }
                     }
                 }
-
-                let mut cnt = vec![BTreeMap::new(); 2];
-                for (cnt, id_box) in cnt.iter_mut().zip(id_field.iter()) {
-                    for id_plane in id_box {
-                        for id_line in id_plane {
-                            for &id_val in id_line {
-                                *cnt.entry(id_val).or_insert(0) += 1;
+            }
+            if unsafe { !EVAL } {
+                let mut st = BTreeMap::new();
+                st.insert(0, 0);
+                for bx in id_field.iter() {
+                    for plane in bx.iter() {
+                        for line in plane.iter() {
+                            for &val in line.iter() {
+                                st.insert(val, 0);
                             }
                         }
                     }
                 }
-                let mut scores = vec![0.0; 2];
-                let mut isos = vec![BTreeSet::new(); 2];
-                for si in 0..2 {
-                    for (&id_val, &v) in cnt[si].iter() {
-                        if !cnt[1 - si].contains_key(&id_val) {
-                            scores[si] += v as f64;
-                            isos[si].insert(id_val);
+                for (i, (_, v)) in st.iter_mut().enumerate() {
+                    *v = i;
+                }
+                println!("{}", st.len() - 1);
+                for id_box in &id_field {
+                    for x in 0..self.d {
+                        for y in 0..self.d {
+                            for plane in id_box.iter() {
+                                let val = plane[y][x];
+                                print!("{} ", st[&val]);
+                            }
+                        }
+                    }
+                    println!();
+                }
+            } else {
+                println!("{}", Self::evaluate(&id_field));
+            }
+        }
+        fn evaluate(id_field: &[Vec<Vec<Vec<i32>>>]) -> usize {
+            let mut cnt = vec![BTreeMap::new(); 2];
+            for (cnt, id_box) in cnt.iter_mut().zip(id_field.iter()) {
+                for id_plane in id_box {
+                    for id_line in id_plane {
+                        for &id_val in id_line {
+                            *cnt.entry(id_val).or_insert(0) += 1;
                         }
                     }
                 }
-                let mut score = scores.into_iter().sum::<f64>();
-                for (cnt, iso) in cnt.iter_mut().zip(isos.iter()) {
-                    for iso in iso.iter() {
-                        cnt.remove(iso);
+            }
+            let mut scores = vec![0.0; 2];
+            let mut isos = vec![BTreeSet::new(); 2];
+            for si in 0..2 {
+                for (&id_val, &v) in cnt[si].iter() {
+                    if !cnt[1 - si].contains_key(&id_val) {
+                        scores[si] += v as f64;
+                        isos[si].insert(id_val);
                     }
                 }
-                for (_, &v) in cnt[0].iter() {
-                    score += 1.0 / v as f64;
-                }
-                let score = f64::round(score * 1e9) as usize;
-                println!("{}", score);
             }
+            let mut score = scores.into_iter().sum::<f64>();
+            for (cnt, iso) in cnt.iter_mut().zip(isos.iter()) {
+                for iso in iso.iter() {
+                    cnt.remove(iso);
+                }
+            }
+            for (_, &v) in cnt[0].iter() {
+                score += 1.0 / v as f64;
+            }
+            f64::round(score * 1e9) as usize
         }
         fn debug_id_field(&self, id_field: &[Vec<Vec<Vec<i32>>>]) {
             if !cfg!(debug_assertions) {
@@ -4952,7 +4952,7 @@ mod solver {
             }
         }
         pub fn solve(&self) {
-            let state = State::new(&self.silhouettes, self.d, &self.start_time);
+            let state = State::new(&self.silhouettes, self.d);
             self.debug_id_field(&state.id_field);
             let mut occs = state.occupancies();
             self.debug_occupancies(&occs);
