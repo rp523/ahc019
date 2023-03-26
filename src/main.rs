@@ -4183,7 +4183,7 @@ mod state {
 
             state
         }
-        fn refine(state: &State) -> Option<State> {
+        pub fn refine(state: &State) -> Option<State> {
             let d = state.id_field[0].len();
             let mut occs = state.occupancies();
             // split parity, and search nearest pair.
@@ -4565,32 +4565,37 @@ mod state {
             }
             ret
         }
-        pub fn modify(&self, d: usize, rand: &mut XorShift64) -> Option<Self> {
-            let si = rand.next_usize() % 2;
-            let z = rand.next_usize() % d;
-            let y = rand.next_usize() % d;
-            let x = rand.next_usize() % d;
-            if self.id_field[si][z][y][x] == 0 {
+        pub fn modify(
+            &self,
+            assigns: &[Vec<(usize, usize, usize)>],
+            d: usize,
+            rand: &mut XorShift64,
+        ) -> Option<Self> {
+            let (z, y, x) = assigns[0][rand.next_usize() % assigns[0].len()];
+            let own_id0 = self.id_field[0][z][y][x];
+            if own_id0 == 0 {
                 return None;
             }
-            let mut nxt = vec![];
-            for &(dz, dy, dx) in DELTAS.iter() {
-                if let Some(nz) = z.move_delta(dz, 0, d - 1) {
-                    if let Some(ny) = y.move_delta(dy, 0, d - 1) {
-                        if let Some(nx) = x.move_delta(dx, 0, d - 1) {
-                            if self.id_field[si][nz][ny][nx] != 0 {
-                                nxt.push((nz, ny, nx));
+            let (z, y, x) = assigns[1][rand.next_usize() % assigns[1].len()];
+            let own_id1 = self.id_field[1][z][y][x];
+            if own_id1 == 0 {
+                return None;
+            }
+            let owns = vec![own_id0, own_id1];
+            let mut ret = self.clone();
+            let mut id_cnt = (d * d * d) as i32;
+            for (id_box, own) in ret.id_field.iter_mut().zip(owns.into_iter()) {
+                for id_plane in id_box.iter_mut() {
+                    for id_line in id_plane.iter_mut() {
+                        for id_val in id_line.iter_mut() {
+                            if id_val == &own {
+                                *id_val = id_cnt;
+                                id_cnt += 1;
                             }
                         }
                     }
                 }
             }
-            if nxt.is_empty() {
-                return None;
-            }
-            let mut ret = self.clone();
-            let (nz, ny, nx) = nxt[rand.next_usize() % nxt.len()];
-            ret.id_field[si][nz][ny][nx] = self.id_field[si][z][y][x];
             Some(ret)
         }
     }
@@ -4607,8 +4612,8 @@ mod solver {
     pub struct Solver {
         d: usize,
         silhouettes: Vec<Silhouette>,
+        assigns: Vec<Vec<(usize, usize, usize)>>,
         start_time: Instant,
-        rand: XorShift64,
     }
     impl Solver {
         pub fn new() -> Self {
@@ -4625,11 +4630,21 @@ mod solver {
             }
             let d = read::<usize>();
             let silhouettes = (0..2).map(|_| Silhouette::new(d)).collect::<Vec<_>>();
+            let mut assigns = vec![vec![]; 2];
+            for (assign, silhouette) in assigns.iter_mut().zip(silhouettes.iter()) {
+                for z in 0..d {
+                    for y in (0..d).filter(|&y| silhouette.zy[z][y]) {
+                        for x in (0..d).filter(|&x| silhouette.zx[z][x]) {
+                            assign.push((z, y, x));
+                        }
+                    }
+                }
+            }
             Self {
                 d,
                 silhouettes,
+                assigns,
                 start_time,
-                rand: XorShift64::new(),
             }
         }
         #[allow(clippy::type_complexity)]
@@ -4987,7 +5002,10 @@ mod solver {
                 }
             }
         }
-        fn refine(&self, state: State) -> State {
+        fn refine(&self, mut state: State) -> State {
+            while let Some(nstate) = State::refine(&state) {
+                state = nstate;
+            }
             self.debug_id_field(&state.id_field);
             let mut occs = state.occupancies();
             self.debug_occupancies(&occs);
@@ -4997,11 +5015,12 @@ mod solver {
             State { id_field }
         }
         pub fn solve(&mut self) {
+            let mut rand = XorShift64::new();
             let mut pivot_state = self.refine(State::new(&self.silhouettes, self.d));
             let mut best_state = pivot_state.clone();
             let mut best_score = self.evaluate(&best_state.id_field);
             while self.start_time.elapsed().as_millis() < 5_000 {
-                if let Some(next_state) = pivot_state.modify(self.d, &mut self.rand) {
+                if let Some(next_state) = pivot_state.modify(&self.assigns, self.d, &mut rand) {
                     let next_state = self.refine(next_state);
                     let next_score = self.evaluate(&next_state.id_field);
                     if best_score.chmin(next_score) {
