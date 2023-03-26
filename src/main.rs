@@ -3322,15 +3322,15 @@ mod occupancy {
             }
         }
         fn rot_z(&mut self) {
-            (self.dirs[1], self.dirs[2]) = (self.dirs[2], self.dirs[1]);
+            self.dirs.swap(1, 2);
             self.dirs[2].sign = !self.dirs[2].sign;
         }
         fn rot_y(&mut self) {
-            (self.dirs[2], self.dirs[0]) = (self.dirs[0], self.dirs[2]);
+            self.dirs.swap(2, 0);
             self.dirs[0].sign = !self.dirs[0].sign;
         }
         fn rot_x(&mut self) {
-            (self.dirs[0], self.dirs[1]) = (self.dirs[1], self.dirs[0]);
+            self.dirs.swap(0, 1);
             self.dirs[1].sign = !self.dirs[1].sign;
         }
     }
