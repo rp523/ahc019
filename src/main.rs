@@ -4011,6 +4011,7 @@ mod state {
     use crate::{
         flow::Flow,
         occupancy::{OccuRange, Occupancy},
+        xor_shift_64::XorShift64,
         ChangeMinMax, CoordinateCompress, MoveDelta,
     };
     use core::num;
@@ -4042,6 +4043,7 @@ mod state {
             Self { zx, zy }
         }
     }
+    #[derive(Clone)]
     pub struct State {
         pub id_field: Vec<Vec<Vec<Vec<i32>>>>,
     }
@@ -4563,12 +4565,42 @@ mod state {
             }
             ret
         }
+        pub fn modify(&self, d: usize, rand: &mut XorShift64) -> Option<Self> {
+            let si = rand.next_usize() % 2;
+            let z = rand.next_usize() % d;
+            let y = rand.next_usize() % d;
+            let x = rand.next_usize() % d;
+            if self.id_field[si][z][y][x] == 0 {
+                return None;
+            }
+            let mut nxt = vec![];
+            for &(dz, dy, dx) in DELTAS.iter() {
+                if let Some(nz) = z.move_delta(dz, 0, d - 1) {
+                    if let Some(ny) = y.move_delta(dy, 0, d - 1) {
+                        if let Some(nx) = x.move_delta(dx, 0, d - 1) {
+                            if self.id_field[si][nz][ny][nx] != 0 {
+                                nxt.push((nz, ny, nx));
+                            }
+                        }
+                    }
+                }
+            }
+            if nxt.is_empty() {
+                return None;
+            }
+            let mut ret = self.clone();
+            let (nz, ny, nx) = nxt[rand.next_usize() % nxt.len()];
+            ret.id_field[si][nz][ny][nx] = self.id_field[si][z][y][x];
+            Some(ret)
+        }
     }
 }
 mod solver {
     static mut EVAL: bool = false;
     use crate::occupancy::Occupancy;
     use crate::state::*;
+    use crate::xor_shift_64::XorShift64;
+    use crate::ChangeMinMax;
     use crate::Flow;
     use std::collections::{BTreeMap, BTreeSet};
     use std::time::Instant;
@@ -4576,6 +4608,7 @@ mod solver {
         d: usize,
         silhouettes: Vec<Silhouette>,
         start_time: Instant,
+        rand: XorShift64,
     }
     impl Solver {
         pub fn new() -> Self {
@@ -4596,6 +4629,7 @@ mod solver {
                 d,
                 silhouettes,
                 start_time,
+                rand: XorShift64::new(),
             }
         }
         #[allow(clippy::type_complexity)]
@@ -4777,40 +4811,6 @@ mod solver {
         }
         fn output(&self, state: State) {
             let id_field = state.id_field;
-            if cfg!(debug_assertions) {
-                let mut cnt_2d = vec![vec![vec![vec![0; self.d]; self.d]; self.d]; 2];
-                for (id_box, cnt) in id_field.iter().zip(cnt_2d.iter_mut()) {
-                    for (id_plane, cnt) in id_box.iter().zip(cnt.iter_mut()) {
-                        for (id_line, cnt) in id_plane.iter().zip(cnt.iter_mut()) {
-                            for (&id_val, cnt) in id_line.iter().zip(cnt.iter_mut()) {
-                                if id_val > 0 {
-                                    *cnt += 1;
-                                }
-                            }
-                        }
-                    }
-                }
-                for (silhouette, cnt) in self.silhouettes.iter().zip(cnt_2d.iter()) {
-                    for (z, cnt) in cnt.iter().enumerate() {
-                        for (y, cnt) in cnt.iter().enumerate() {
-                            let sm = cnt.iter().sum::<usize>();
-                            if silhouette.zy[z][y] {
-                                assert!(sm > 0);
-                            } else {
-                                assert!(sm == 0);
-                            }
-                        }
-                        for x in 0..self.d {
-                            let sm = (0..self.d).map(|y| cnt[y][x]).sum::<usize>();
-                            if silhouette.zx[z][x] {
-                                assert!(sm > 0);
-                            } else {
-                                assert!(sm == 0);
-                            }
-                        }
-                    }
-                }
-            }
             if unsafe { !EVAL } {
                 let mut st = BTreeMap::new();
                 st.insert(0, 0);
@@ -4839,10 +4839,45 @@ mod solver {
                     println!();
                 }
             } else {
-                println!("{}", Self::evaluate(&id_field));
+                println!("{}", self.evaluate(&id_field));
             }
         }
-        fn evaluate(id_field: &[Vec<Vec<Vec<i32>>>]) -> usize {
+        fn evaluate(&self, id_field: &[Vec<Vec<Vec<i32>>>]) -> usize {
+            if cfg!(debug_assertions) {
+                let mut cnt_2d = vec![vec![vec![vec![0; self.d]; self.d]; self.d]; 2];
+                for (id_box, cnt) in id_field.iter().zip(cnt_2d.iter_mut()) {
+                    for (id_plane, cnt) in id_box.iter().zip(cnt.iter_mut()) {
+                        for (id_line, cnt) in id_plane.iter().zip(cnt.iter_mut()) {
+                            for (&id_val, cnt) in id_line.iter().zip(cnt.iter_mut()) {
+                                if id_val > 0 {
+                                    *cnt += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+                for (silhouette, cnt) in self.silhouettes.iter().zip(cnt_2d.iter()) {
+                    for (z, cnt) in cnt.iter().enumerate() {
+                        for (y, cnt) in cnt.iter().enumerate() {
+                            let sm = cnt.iter().sum::<usize>();
+                            if silhouette.zy[z][y] {
+                                debug_assert!(sm > 0);
+                            } else {
+                                debug_assert!(sm == 0);
+                            }
+                        }
+                        for x in 0..self.d {
+                            let sm = (0..self.d).map(|y| cnt[y][x]).sum::<usize>();
+                            if silhouette.zx[z][x] {
+                                debug_assert!(sm > 0);
+                            } else {
+                                debug_assert!(sm == 0);
+                            }
+                        }
+                    }
+                }
+            }
+
             let mut cnt = vec![BTreeMap::new(); 2];
             for (cnt, id_box) in cnt.iter_mut().zip(id_field.iter()) {
                 for id_plane in id_box {
@@ -4952,7 +4987,7 @@ mod solver {
                 }
             }
         }
-        fn refine(&self, state: &State) -> State {
+        fn refine(&self, state: State) -> State {
             self.debug_id_field(&state.id_field);
             let mut occs = state.occupancies();
             self.debug_occupancies(&occs);
@@ -4961,9 +4996,21 @@ mod solver {
             self.remove_useless(&mut id_field, occs, matches);
             State { id_field }
         }
-        pub fn solve(&self) {
-            let state = self.refine(&State::new(&self.silhouettes, self.d));
-            self.output(state);
+        pub fn solve(&mut self) {
+            let mut pivot_state = self.refine(State::new(&self.silhouettes, self.d));
+            let mut best_state = pivot_state.clone();
+            let mut best_score = self.evaluate(&best_state.id_field);
+            while self.start_time.elapsed().as_millis() < 5_000 {
+                if let Some(next_state) = pivot_state.modify(self.d, &mut self.rand) {
+                    let next_state = self.refine(next_state);
+                    let next_score = self.evaluate(&next_state.id_field);
+                    if best_score.chmin(next_score) {
+                        best_state = next_state.clone();
+                        pivot_state = next_state.clone();
+                    }
+                }
+            }
+            self.output(best_state);
         }
     }
 }
