@@ -4129,8 +4129,7 @@ mod state {
             state
         }
         pub fn refine(state: &State) -> Option<State> {
-            let d = state.id_field[0].len();
-            let mut occs = state.occupancies();
+            let mut occs = state.positive_occupancies();
             // split parity, and search nearest pair.
             let mut splits = vec![]; // [sil, grp, num]
             let mut all_nears = vec![]; // [sil, all_occ, near-occ]
@@ -4360,7 +4359,7 @@ mod state {
             assert!(minf.min_cost_flow(src, dst, flow).is_some());
 
             // flow any.
-            let mut id_field = vec![vec![vec![vec![0; d]; d]; d]; 2];
+            let mut id_field = state.id_field.clone();
             let mut id_cnt = 1;
             for (id_box, occs) in id_field.iter_mut().zip(occs.iter()) {
                 for occ in occs {
@@ -4430,10 +4429,10 @@ mod state {
         fn split_to_binary_graph(occs: &[Occupancy]) -> (Vec<Vec<usize>>, Vec<BTreeSet<usize>>) {
             let d = occs[0].get_range().d();
             debug_assert!(occs.iter().all(|occ| occ.get_range().d() == d));
-            let mut id_box = vec![vec![vec![0; d]; d]; d];
+            let mut id_box = vec![vec![vec![0i32; d]; d]; d];
             for (oi, occ) in occs.iter().enumerate() {
                 for (z, y, x) in occ.points() {
-                    let id_val = oi + 1;
+                    let id_val = oi as i32 + 1;
                     id_box[z][y][x] = id_val;
                 }
             }
@@ -4454,7 +4453,7 @@ mod state {
                     // scan near
                     for (z0, y0, x0) in occ0.points() {
                         let id0 = id_box[z0][y0][x0];
-                        debug_assert!(id0 == oi0 + 1);
+                        debug_assert!(id0 == oi0 as i32 + 1);
                         for &(dz, dy, dx) in DELTAS.iter() {
                             if let Some(z1) = z0.move_delta(dz, 0, d - 1) {
                                 if let Some(y1) = y0.move_delta(dy, 0, d - 1) {
@@ -4463,7 +4462,7 @@ mod state {
                                         if id1 <= 0 || id1 == id0 {
                                             continue;
                                         }
-                                        let oi1 = id1 - 1;
+                                        let oi1 = id1 as usize - 1;
                                         near[oi0].insert(oi1);
                                         near[oi1].insert(oi0);
                                         if dist[oi1].chmin(d1) {
@@ -4483,7 +4482,7 @@ mod state {
             debug_assert!(ois.iter().map(|ois| ois.len()).sum::<usize>() == occs.len());
             (ois, near)
         }
-        pub fn occupancies(&self) -> Vec<Vec<Occupancy>> {
+        pub fn positive_occupancies(&self) -> Vec<Vec<Occupancy>> {
             let d = self.id_field[0].len();
             let mut ret: Vec<Vec<Occupancy>> = vec![];
             for id_box in self.id_field.iter() {
@@ -4515,17 +4514,13 @@ mod state {
             assigns: &[Vec<(usize, usize, usize)>],
             d: usize,
             rand: &mut XorShift64,
-        ) -> Option<Self> {
+        ) -> Self {
             let (z, y, x) = assigns[0][rand.next_usize() % assigns[0].len()];
             let own_id0 = self.id_field[0][z][y][x];
-            if own_id0 <= 0 {
-                return None;
-            }
+            debug_assert!(own_id0 != 0);
             let (z, y, x) = assigns[1][rand.next_usize() % assigns[1].len()];
             let own_id1 = self.id_field[1][z][y][x];
-            if own_id1 <= 0 {
-                return None;
-            }
+            debug_assert!(own_id1 != 0);
             let owns = vec![own_id0, own_id1];
             let mut ret = self.clone();
             let mut id_cnt = (d * d * d) as i32;
@@ -4558,7 +4553,7 @@ mod state {
                     }
                 }
             }
-            Some(ret)
+            ret
         }
     }
 }
@@ -4611,13 +4606,13 @@ mod solver {
         }
         #[allow(clippy::type_complexity)]
         fn max_match(
+            org_state: &State,
             occs: &mut [Vec<Occupancy>],
-            d: usize,
         ) -> (Vec<Vec<Vec<Vec<i32>>>>, Vec<BTreeMap<usize, usize>>) {
             let n0 = occs[0].len();
             let n1 = occs[1].len();
 
-            let mut id_field = vec![vec![vec![vec![0; d]; d]; d]; 2];
+            let mut id_field = org_state.id_field.clone();
             let mut id_val = 0;
             for (id_box, occs) in id_field.iter_mut().zip(occs.iter()) {
                 for occ in occs.iter() {
@@ -4973,9 +4968,9 @@ mod solver {
                 state = nstate;
             }
             self.debug_id_field(&state.id_field);
-            let mut occs = state.occupancies();
+            let mut occs = state.positive_occupancies();
             self.debug_occupancies(&occs);
-            let (mut id_field, matches) = Self::max_match(&mut occs, self.d);
+            let (mut id_field, matches) = Self::max_match(&state, &mut occs);
             self.debug_id_field(&id_field);
             self.remove_useless(&mut id_field, occs, matches);
             State { id_field }
@@ -4985,16 +4980,17 @@ mod solver {
             let mut pivot_state = self.refine(State::new(&self.silhouettes, self.d));
             let mut best_state = pivot_state.clone();
             let mut best_score = self.evaluate(&best_state.id_field);
+            let mut lc = 0;
             while self.start_time.elapsed().as_millis() < 5_000 {
-                if let Some(next_state) = pivot_state.modify(&self.assigns, self.d, &mut rand) {
-                    let next_state = self.refine(next_state);
-                    let next_score = self.evaluate(&next_state.id_field);
-                    if best_score.chmin(next_score) {
-                        best_state = next_state.clone();
-                        pivot_state = next_state.clone();
-                    }
+                lc += 1;
+                let next_state = self.refine(pivot_state.modify(&self.assigns, self.d, &mut rand));
+                let next_score = self.evaluate(&next_state.id_field);
+                if best_score.chmin(next_score) {
+                    best_state = next_state.clone();
+                    pivot_state = next_state.clone();
                 }
             }
+            //eprintln!("{}", lc);
             self.output(best_state);
         }
     }
