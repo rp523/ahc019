@@ -3175,67 +3175,8 @@ use procon_reader::*;
 /*************************************************************************************
 *************************************************************************************/
 
-mod comp_points {
-    #[derive(Clone)]
-    pub struct CompPoints {
-        pts: Vec<u32>,
-    }
-    impl CompPoints {
-        pub fn new() -> Self {
-            Self { pts: vec![] }
-        }
-        pub fn add(&mut self, z: usize, y: usize, x: usize) {
-            let val = Self::encode(z, y, x);
-            self.pts.push(val);
-        }
-        pub fn len(&self) -> usize {
-            self.pts.len()
-        }
-        fn encode(z: usize, y: usize, x: usize) -> u32 {
-            let mut val = 0;
-            val |= x as u32;
-            val |= (y as u32) << 4;
-            val |= (z as u32) << 8;
-            val
-        }
-        fn decode(i: u32) -> (usize, usize, usize) {
-            let val = i as usize;
-            ((val >> 8) & 15, (val >> 4) & 15, (val & 15))
-        }
-        #[allow(clippy::type_complexity)]
-        pub fn iter_map(
-            &self,
-        ) -> std::iter::Map<std::slice::Iter<'_, u32>, fn(&u32) -> (usize, usize, usize)> {
-            self.pts.iter().map(|&idx| Self::decode(idx))
-        }
-    }
-    mod tests {
-        use super::*;
-        #[test]
-        fn rebuild() {
-            let mut rand = crate::XorShift64::new();
-            let d = 14;
-            for _ in 0..100 {
-                let mut zyx = vec![];
-                let mut pts = CompPoints::new();
-                for _ in 0..100 {
-                    let z = rand.next_usize() % d;
-                    let y = rand.next_usize() % d;
-                    let x = rand.next_usize() % d;
-                    zyx.push((z, y, x));
-                    pts.add(z, y, x);
-                }
-                for (&(oz, oy, ox), (z, y, x)) in zyx.iter().zip(pts.iter_map()) {
-                    assert_eq!(oz, z);
-                    assert_eq!(oy, y);
-                    assert_eq!(ox, x);
-                }
-            }
-        }
-    }
-}
 mod occupancy {
-    use crate::{comp_points::CompPoints, ChangeMinMax};
+    use crate::ChangeMinMax;
     use std::{collections::btree_map::Range, ops::RangeInclusive};
     #[derive(Clone, Copy, PartialEq)]
     pub struct OccuRange {
@@ -3375,21 +3316,21 @@ mod occupancy {
                 #[allow(clippy::needless_range_loop)]
                 for z in 0..d {
                     let id = id_box[z][oy][ox];
-                    if (id == 0) || (id == own_id) {
+                    if (id <= 0) || (id == own_id) {
                         continue;
                     }
                     sum_other += 1;
                 }
                 for y in 0..d {
                     let id = id_box[oz][y][ox];
-                    if (id == 0) || (id == own_id) {
+                    if (id <= 0) || (id == own_id) {
                         continue;
                     }
                     sum_other += 1;
                 }
                 for x in 0..d {
                     let id = id_box[oz][oy][x];
-                    if (id == 0) || (id == own_id) {
+                    if (id <= 0) || (id == own_id) {
                         continue;
                     }
                     sum_other += 1;
@@ -4118,6 +4059,9 @@ mod state {
                 for z in 0..d {
                     for y in (0..d).filter(|&y| silhouette.zy[z][y]) {
                         for x in (0..d).filter(|&x| silhouette.zx[z][x]) {
+                            if id_box[z][y][x] <= 0 {
+                                continue;
+                            }
                             if (z + y + x) % 2 == 0 {
                                 for e in mf.g[to_1dim(z, y, x)].iter() {
                                     if e.to >= d * d * d {
@@ -4127,6 +4071,9 @@ mod state {
                                         continue;
                                     }
                                     let (nz, ny, nx) = to_3dim(e.to);
+                                    if id_box[nz][ny][nx] <= 0 {
+                                        continue;
+                                    }
                                     debug_assert!(nz < d);
                                     debug_assert!(ny < d);
                                     debug_assert!(nx < d);
@@ -4136,8 +4083,6 @@ mod state {
                                             + (x as i32 - nx as i32).abs()
                                             <= 1
                                     );
-                                    debug_assert!(id_box[z][y][x] > 0);
-                                    debug_assert!(id_box[nz][ny][nx] > 0);
                                     debug_assert!(silhouette.zy[z][y]);
                                     debug_assert!(silhouette.zx[z][x]);
                                     id_box[nz][ny][nx] = id_box[z][y][x];
@@ -4515,7 +4460,7 @@ mod state {
                                 if let Some(y1) = y0.move_delta(dy, 0, d - 1) {
                                     if let Some(x1) = x0.move_delta(dx, 0, d - 1) {
                                         let id1 = id_box[z1][y1][x1];
-                                        if id1 == 0 || id1 == id0 {
+                                        if id1 <= 0 || id1 == id0 {
                                             continue;
                                         }
                                         let oi1 = id1 - 1;
@@ -4546,7 +4491,7 @@ mod state {
                 for (z, id_plane) in id_box.iter().enumerate() {
                     for (y, id_line) in id_plane.iter().enumerate() {
                         for (x, &id_val) in id_line.iter().enumerate() {
-                            if id_val == 0 {
+                            if id_val <= 0 {
                                 continue;
                             }
                             if let Some(range) = ranges.get_mut(&id_val) {
@@ -4573,17 +4518,34 @@ mod state {
         ) -> Option<Self> {
             let (z, y, x) = assigns[0][rand.next_usize() % assigns[0].len()];
             let own_id0 = self.id_field[0][z][y][x];
-            if own_id0 == 0 {
+            if own_id0 <= 0 {
                 return None;
             }
             let (z, y, x) = assigns[1][rand.next_usize() % assigns[1].len()];
             let own_id1 = self.id_field[1][z][y][x];
-            if own_id1 == 0 {
+            if own_id1 <= 0 {
                 return None;
             }
             let owns = vec![own_id0, own_id1];
             let mut ret = self.clone();
             let mut id_cnt = (d * d * d) as i32;
+            debug_assert!(
+                *self
+                    .id_field
+                    .iter()
+                    .map(|id_box| id_box
+                        .iter()
+                        .map(|id_plane| id_plane
+                            .iter()
+                            .map(|id_line| id_line.iter().max().unwrap())
+                            .max()
+                            .unwrap())
+                        .max()
+                        .unwrap())
+                    .max()
+                    .unwrap()
+                    < id_cnt
+            );
             for (id_box, own) in ret.id_field.iter_mut().zip(owns.into_iter()) {
                 for id_plane in id_box.iter_mut() {
                     for id_line in id_plane.iter_mut() {
@@ -4726,7 +4688,7 @@ mod solver {
             let d = id_box.len();
             for ay in 0..d {
                 let aid = id_box[sz][ay][sx];
-                if aid == 0 {
+                if aid <= 0 {
                     continue;
                 }
                 if aid == id_val {
@@ -4740,7 +4702,7 @@ mod solver {
             let d = id_box.len();
             for ax in 0..d {
                 let aid = id_box[sz][sy][ax];
-                if aid == 0 {
+                if aid <= 0 {
                     continue;
                 }
                 if aid == id_val {
@@ -4788,7 +4750,7 @@ mod solver {
                 for oi in unmatches {
                     let occ = &occs[oi];
                     if Self::can_delete(silhouette, id_box, occ) {
-                        occ.write_id(id_box, 0);
+                        occ.write_id(id_box, -1);
                     }
                 }
             }
@@ -4805,8 +4767,8 @@ mod solver {
                 if !Self::can_delete(&self.silhouettes[1], &id_field[1], &occs[1][oi1]) {
                     continue;
                 }
-                occs[0][oi0].write_id(&mut id_field[0], 0);
-                occs[1][oi1].write_id(&mut id_field[1], 0);
+                occs[0][oi0].write_id(&mut id_field[0], -1);
+                occs[1][oi1].write_id(&mut id_field[1], -1);
             }
         }
         fn can_delete(silhouette: &Silhouette, id_box: &[Vec<Vec<i32>>], occ: &Occupancy) -> bool {
@@ -4832,7 +4794,7 @@ mod solver {
                 for bx in id_field.iter() {
                     for plane in bx.iter() {
                         for line in plane.iter() {
-                            for &val in line.iter() {
+                            for &val in line.iter().filter(|&&val| val > 0) {
                                 st.insert(val, 0);
                             }
                         }
@@ -4847,7 +4809,11 @@ mod solver {
                         for y in 0..self.d {
                             for plane in id_box.iter() {
                                 let val = plane[y][x];
-                                print!("{} ", st[&val]);
+                                if val <= 0 {
+                                    print!("0 ");
+                                } else {
+                                    print!("{} ", st[&val]);
+                                }
                             }
                         }
                     }
@@ -4897,7 +4863,7 @@ mod solver {
             for (cnt, id_box) in cnt.iter_mut().zip(id_field.iter()) {
                 for id_plane in id_box {
                     for id_line in id_plane {
-                        for &id_val in id_line {
+                        for &id_val in id_line.iter().filter(|&&id_val| id_val > 0) {
                             *cnt.entry(id_val).or_insert(0) += 1;
                         }
                     }
