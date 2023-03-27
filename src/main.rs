@@ -3527,7 +3527,7 @@ mod occupancy {
                                 mrange.xsize() - 1 - (rx1 + (range1.xrange.0 - mrange.xrange.0))
                             };
                             if other.get_rel(rz1, ry1, rx1)
-                                && (!self.get_rel(rzyx0[0], rzyx0[1], rzyx0[2]))
+                                != self.get_rel(rzyx0[0], rzyx0[1], rzyx0[2])
                             {
                                 return false;
                             }
