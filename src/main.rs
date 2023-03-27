@@ -4990,7 +4990,7 @@ mod solver {
                     pivot_state = next_state.clone();
                 }
             }
-            //eprintln!("{}", lc);
+            eprintln!("{}", lc);
             self.output(best_state);
         }
     }
