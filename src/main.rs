@@ -4009,24 +4009,58 @@ mod state {
                         }
                     }
                 }
-                let mut mf = Flow::new(d * d * d + 2);
+            }
+            let mut state = Self { id_field };
+            state.connect_isolated_blocks();
+
+            // trial
+            loop {
+                if !Self::refine(&mut state) {
+                    break;
+                }
+            }
+
+            state
+        }
+        fn connect_isolated_blocks(&mut self) {
+            let d = self.id_field[0].len();
+            let to_1dim = |z: usize, y: usize, x: usize| ((z * d) + y) * d + x;
+            let to_3dim = |i: usize| (i / (d * d), (i % (d * d)) / d, i % d);
+            fn is_isolated(id_box: &[Vec<Vec<i32>>], z: usize, y: usize, x: usize) -> bool {
+                let d = id_box.len();
+                let own_id = id_box[z][y][x];
+                debug_assert!(own_id > 0);
+                for &(dz, dy, dx) in DELTAS.iter() {
+                    if let Some(nz) = z.move_delta(dz, 0, d - 1) {
+                        if let Some(ny) = y.move_delta(dy, 0, d - 1) {
+                            if let Some(nx) = x.move_delta(dx, 0, d - 1) {
+                                if id_box[nz][ny][nx] == own_id {
+                                    return false;
+                                }
+                            }
+                        }
+                    }
+                }
+                true
+            }
+            for id_box in self.id_field.iter_mut() {
                 let src = d * d * d;
                 let dst = src + 1;
-                let to_1dim = |z: usize, y: usize, x: usize| ((z * d) + y) * d + x;
-                let to_3dim = |i: usize| (i / (d * d), (i % (d * d)) / d, i % d);
-                for (z, (sil_zy_plane, sil_zx_plane)) in
-                    silhouette.zy.iter().zip(silhouette.zx.iter()).enumerate()
-                {
-                    for y in (0..d).filter(|&y| sil_zy_plane[y]) {
-                        for x in (0..d).filter(|&x| sil_zx_plane[x]) {
-                            // can set
-                            if cfg!(debug_assertions) {
-                                let idx = to_1dim(z, y, x);
-                                let (nz, ny, nx) = to_3dim(idx);
-                                debug_assert!(z == nz);
-                                debug_assert!(y == ny);
-                                debug_assert!(x == nx);
+                let mut mf = Flow::new(dst + 1);
+                for z in 0..d {
+                    for y in 0..d {
+                        for x in 0..d {
+                            debug_assert!(z == to_3dim(to_1dim(z, y, x)).0);
+                            debug_assert!(y == to_3dim(to_1dim(z, y, x)).1);
+                            debug_assert!(x == to_3dim(to_1dim(z, y, x)).2);
+                            let id_val = id_box[z][y][x];
+                            if id_val <= 0 {
+                                continue;
                             }
+                            if !is_isolated(id_box, z, y, x) {
+                                continue;
+                            }
+                            // can set
                             if (z + y + x) % 2 == 1 {
                                 mf.add_edge(to_1dim(z, y, x), dst, 1);
                             } else {
@@ -4035,13 +4069,16 @@ mod state {
                                     if let Some(nz) = z.move_delta(dz, 0, d - 1) {
                                         if let Some(ny) = y.move_delta(dy, 0, d - 1) {
                                             if let Some(nx) = x.move_delta(dx, 0, d - 1) {
-                                                if !silhouette.zy[nz][ny] {
+                                                let nid = id_box[nz][ny][nx];
+                                                if nid <= 0 {
                                                     continue;
                                                 }
-                                                if !silhouette.zx[nz][nx] {
+                                                if !is_isolated(id_box, nz, ny, nx) {
                                                     continue;
                                                 }
                                                 debug_assert!((nz + ny + nx) % 2 == 1);
+                                                debug_assert!(id_box[nz][ny][nx] > 0);
+                                                debug_assert!(id_box[z][y][x] > 0);
                                                 mf.add_edge(
                                                     to_1dim(z, y, x),
                                                     to_1dim(nz, ny, nx),
@@ -4055,11 +4092,17 @@ mod state {
                         }
                     }
                 }
-                let _ = mf.max_flow(src, dst);
+                if mf.max_flow(src, dst) == 0 {
+                    continue;
+                }
                 for z in 0..d {
-                    for y in (0..d).filter(|&y| silhouette.zy[z][y]) {
-                        for x in (0..d).filter(|&x| silhouette.zx[z][x]) {
-                            if id_box[z][y][x] <= 0 {
+                    for y in 0..d {
+                        for x in 0..d {
+                            let id_val = id_box[z][y][x];
+                            if id_val <= 0 {
+                                continue;
+                            }
+                            if !is_isolated(id_box, z, y, x) {
                                 continue;
                             }
                             if (z + y + x) % 2 == 0 {
@@ -4071,9 +4114,8 @@ mod state {
                                         continue;
                                     }
                                     let (nz, ny, nx) = to_3dim(e.to);
-                                    if id_box[nz][ny][nx] <= 0 {
-                                        continue;
-                                    }
+                                    let nid = id_box[nz][ny][nx];
+                                    debug_assert!(nid > 0);
                                     debug_assert!(nz < d);
                                     debug_assert!(ny < d);
                                     debug_assert!(nx < d);
@@ -4083,52 +4125,15 @@ mod state {
                                             + (x as i32 - nx as i32).abs()
                                             <= 1
                                     );
-                                    debug_assert!(silhouette.zy[z][y]);
-                                    debug_assert!(silhouette.zx[z][x]);
-                                    id_box[nz][ny][nx] = id_box[z][y][x];
+                                    id_box[nz][ny][nx] = id_val;
                                 }
                             }
                         }
                     }
                 }
-                let mut id_set = BTreeMap::new();
-                for (z, id_plane) in id_box.iter().enumerate() {
-                    for (y, id_line) in id_plane
-                        .iter()
-                        .enumerate()
-                        .filter(|(y, _id_line)| silhouette.zy[z][*y])
-                    {
-                        for (x, &id_val) in id_line
-                            .iter()
-                            .enumerate()
-                            .filter(|(x, _id_val)| silhouette.zx[z][*x])
-                        {
-                            if id_val > 0 {
-                                id_set.entry(id_val).or_insert(vec![]).push((z, y, x));
-                            }
-                        }
-                    }
-                }
-                for (_id, vc) in id_set.into_iter() {
-                    if vc.len() > 2 {
-                        for pt in vc {
-                            eprintln!("{} {} {}", pt.0, pt.1, pt.2);
-                        }
-                        debug_assert!(false);
-                    }
-                }
             }
-
-            let mut state = Self { id_field };
-
-            // trial
-            while let Some(next_state) = Self::refine(&state) {
-                state = next_state;
-            }
-
-            state
         }
-        pub fn refine(state: &State) -> Option<State> {
+        pub fn refine(state: &mut State) -> bool {
             let mut occs = state.positive_occupancies();
             // split parity, and search nearest pair.
             let mut splits = vec![]; // [sil, grp, num]
@@ -4195,7 +4200,7 @@ mod state {
                 }
             }
             if merge_memo.is_empty() {
-                return None;
+                return false;
             }
             debug_assert!(
                 merge_occs.iter().map(|occ| occ.eff_size()).max().unwrap()
@@ -4354,14 +4359,13 @@ mod state {
             }
             let flow = maxf.max_flow(src, dst);
             if flow == 0 {
-                return None;
+                return false;
             }
             assert!(minf.min_cost_flow(src, dst, flow).is_some());
 
             // flow any.
-            let mut id_field = state.id_field.clone();
             let mut id_cnt = 1;
-            for (id_box, occs) in id_field.iter_mut().zip(occs.iter()) {
+            for (id_box, occs) in state.id_field.iter_mut().zip(occs.iter()) {
                 for occ in occs {
                     occ.write_id(id_box, id_cnt);
                     id_cnt += 1;
@@ -4413,18 +4417,18 @@ mod state {
                         remains[1][oi10] = false;
                         remains[1][oi11] = false;
                         let (z0, y0, x0) = occs[0][oi00].points()[0];
-                        let merge_id0 = id_field[0][z0][y0][x0];
-                        occs[0][oi01].write_id(&mut id_field[0], merge_id0);
+                        let merge_id0 = state.id_field[0][z0][y0][x0];
+                        occs[0][oi01].write_id(&mut state.id_field[0], merge_id0);
                         let (z1, y1, x1) = occs[1][oi10].points()[0];
-                        let merge_id1 = id_field[1][z1][y1][x1];
-                        occs[1][oi11].write_id(&mut id_field[1], merge_id1);
+                        let merge_id1 = state.id_field[1][z1][y1][x1];
+                        occs[1][oi11].write_id(&mut state.id_field[1], merge_id1);
                         break;
                     }
                 }
                 p0_base += memo[0].len();
                 p1_base += memo[1].len();
             }
-            Some(Self { id_field })
+            true
         }
         fn split_to_binary_graph(occs: &[Occupancy]) -> (Vec<Vec<usize>>, Vec<BTreeSet<usize>>) {
             let d = occs[0].get_range().d();
@@ -4964,8 +4968,10 @@ mod solver {
             }
         }
         fn refine(&self, mut state: State) -> State {
-            while let Some(nstate) = State::refine(&state) {
-                state = nstate;
+            loop {
+                if !State::refine(&mut state) {
+                    break;
+                }
             }
             self.debug_id_field(&state.id_field);
             let mut occs = state.positive_occupancies();
