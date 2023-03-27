@@ -4022,7 +4022,7 @@ mod state {
 
             state
         }
-        fn connect_isolated_blocks(&mut self) {
+        pub fn connect_isolated_blocks(&mut self) {
             let d = self.id_field[0].len();
             let to_1dim = |z: usize, y: usize, x: usize| ((z * d) + y) * d + x;
             let to_3dim = |i: usize| (i / (d * d), (i % (d * d)) / d, i % d);
@@ -4549,7 +4549,7 @@ mod state {
                 for id_plane in id_box.iter_mut() {
                     for id_line in id_plane.iter_mut() {
                         for id_val in id_line.iter_mut() {
-                            if id_val == &own {
+                            if *id_val == own || *id_val < 0 {
                                 *id_val = id_cnt;
                                 id_cnt += 1;
                             }
@@ -4968,6 +4968,7 @@ mod solver {
             }
         }
         fn refine(&self, mut state: State) -> State {
+            //state.connect_isolated_blocks();
             loop {
                 if !State::refine(&mut state) {
                     break;
@@ -4987,12 +4988,17 @@ mod solver {
             let mut best_state = pivot_state.clone();
             let mut best_score = self.evaluate(&best_state.id_field);
             let mut lc = 0;
+            let mut last = 0;
             while self.start_time.elapsed().as_millis() < 5_000 {
                 lc += 1;
                 let next_state = self.refine(pivot_state.modify(&self.assigns, self.d, &mut rand));
                 let next_score = self.evaluate(&next_state.id_field);
                 if best_score.chmin(next_score) {
+                    last = lc;
                     best_state = next_state.clone();
+                    pivot_state = next_state.clone();
+                    eprintln!("{}", lc);
+                } else if lc > last + 100 {
                     pivot_state = next_state.clone();
                 }
             }
