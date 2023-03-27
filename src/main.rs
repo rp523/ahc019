@@ -4549,13 +4549,16 @@ mod state {
                 for id_plane in id_box.iter_mut() {
                     for id_line in id_plane.iter_mut() {
                         for id_val in id_line.iter_mut() {
-                            if *id_val == own || *id_val < 0 {
+                            if *id_val == own {//|| *id_val < 0 {
                                 *id_val = id_cnt;
                                 id_cnt += 1;
                             }
                         }
                     }
                 }
+            }
+            if own_id0 < 0 || own_id1 < 0 {
+                ret.connect_isolated_blocks();
             }
             ret
         }
@@ -4758,7 +4761,19 @@ mod solver {
             for (&oi0, &oi1) in matches[0].iter() {
                 match_pairs.push((oi0, oi1));
             }
-            match_pairs.sort_by_cached_key(|&(oi0, _oi1)| occs[0][oi0].eff_size());
+            match_pairs.sort_by_cached_key(|&(oi0, oi1)| -> i64 {
+                let cost0 = {
+                    let occ = &mut occs[0][oi0];
+                    let (z, y, x) = occ.points()[0];
+                    occ.get_cost(&id_field[0], id_field[0][z][y][x])
+                };
+                let cost1 = {
+                    let occ = &mut occs[1][oi1];
+                    let (z, y, x) = occ.points()[0];
+                    occ.get_cost(&id_field[1], id_field[1][z][y][x])
+                };
+                cost0 + cost1
+            });
             for (oi0, oi1) in match_pairs {
                 if !Self::can_delete(&self.silhouettes[0], &id_field[0], &occs[0][oi0]) {
                     continue;
