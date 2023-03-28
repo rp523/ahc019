@@ -3177,6 +3177,7 @@ use procon_reader::*;
 
 mod occupancy {
     use crate::ChangeMinMax;
+    use std::collections::HashSet;
     use std::{collections::btree_map::Range, ops::RangeInclusive};
     #[derive(Clone, Copy, PartialEq)]
     pub struct OccuRange {
@@ -3275,11 +3276,31 @@ mod occupancy {
             self.dirs[1].sign = !self.dirs[1].sign;
         }
     }
+
+    #[derive(Clone, Copy)]
+    pub struct Safety {
+        other_dir_min: usize,
+        eff_size: usize,
+    }
+    impl From<Safety> for i64 {
+        fn from(value: Safety) -> i64 {
+            value.other_dir_min as i64 * 15 * 15 * 15 + value.eff_size as i64
+        }
+    }
+    impl std::ops::Add<Safety> for Safety {
+        type Output = Self;
+        fn add(self, rhs: Safety) -> Self::Output {
+            Self {
+                other_dir_min: std::cmp::min(self.other_dir_min, rhs.other_dir_min),
+                eff_size: self.eff_size + rhs.eff_size,
+            }
+        }
+    }
     #[derive(Clone)]
     pub struct Occupancy {
         field: Vec<u64>,
         range: OccuRange,
-        cost: Option<i64>,
+        safety: Option<Safety>,
     }
     const BITWIDTH: usize = 64;
     impl Occupancy {
@@ -3288,7 +3309,7 @@ mod occupancy {
             Self {
                 field: vec![0; sz],
                 range,
-                cost: None,
+                safety: None,
             }
         }
         pub fn new(id_field: &[Vec<Vec<i32>>], target_id: i32, range: OccuRange) -> Self {
@@ -3305,41 +3326,43 @@ mod occupancy {
             }
             ret
         }
-        pub fn get_cost(&mut self, id_box: &[Vec<Vec<i32>>], own_id: i32) -> i64 {
+        fn calc_safety(&self, id_box: &[Vec<Vec<i32>>], own_id: i32) -> Safety {
             let d = id_box.len();
-            if let Some(cost) = self.cost {
-                return cost;
-            }
-            let mut norm = 0;
-            let mut sum_other = 0;
+            let mut eff_size = 0;
+            let mut other_dir_min = 1 << 60;
             for (oz, oy, ox) in self.points() {
-                #[allow(clippy::needless_range_loop)]
-                for z in 0..d {
-                    let id = id_box[z][oy][ox];
-                    if (id <= 0) || (id == own_id) {
-                        continue;
-                    }
-                    sum_other += 1;
-                }
+                eff_size += 1;
+
+                let mut other_id_y = HashSet::new();
                 for y in 0..d {
                     let id = id_box[oz][y][ox];
                     if (id <= 0) || (id == own_id) {
                         continue;
                     }
-                    sum_other += 1;
+                    other_id_y.insert(id);
                 }
+                other_dir_min.chmin(other_id_y.len());
+                let mut other_id_x = HashSet::new();
                 for x in 0..d {
                     let id = id_box[oz][oy][x];
                     if (id <= 0) || (id == own_id) {
                         continue;
                     }
-                    sum_other += 1;
+                    other_id_x.insert(id);
                 }
-                norm += 1;
+                other_dir_min.chmin(other_id_x.len());
             }
-            let cost = sum_other / norm;
-            self.cost = Some(cost);
-            cost
+            Safety {
+                other_dir_min,
+                eff_size,
+            }
+        }
+        pub fn get_cost(&mut self, id_box: &[Vec<Vec<i32>>], own_id: i32) -> Safety {
+            if let Some(safety) = self.safety {
+                return safety;
+            }
+            self.safety = Some(self.calc_safety(id_box, own_id));
+            self.safety.unwrap()
         }
         pub fn get_range(&self) -> &OccuRange {
             &self.range
@@ -4283,7 +4306,7 @@ mod state {
                             occ.get_cost(&state.id_field[0], id)
                         };
                         let cost = cost0 + cost1;
-                        minf.add_cost_edge(p0, num_even[0] + num_pair[0] + mi, 1, cost);
+                        minf.add_cost_edge(p0, num_even[0] + num_pair[0] + mi, 1, cost.into());
                         maxf.add_edge(p0, num_even[0] + num_pair[0] + mi, 1);
                         p0 += 1;
                     }
@@ -4312,7 +4335,7 @@ mod state {
                             occ.get_cost(&state.id_field[1], id)
                         };
                         let cost = cost0 + cost1;
-                        minf.add_cost_edge(num_even[0] + num_pair[0] + mi, p1, 1, cost);
+                        minf.add_cost_edge(num_even[0] + num_pair[0] + mi, p1, 1, cost.into());
                         maxf.add_edge(num_even[0] + num_pair[0] + mi, p1, 1);
                         p1 += 1;
                     }
@@ -4549,7 +4572,7 @@ mod state {
                 for id_plane in id_box.iter_mut() {
                     for id_line in id_plane.iter_mut() {
                         for id_val in id_line.iter_mut() {
-                            if *id_val == own {//|| *id_val < 0 {
+                            if *id_val == own {
                                 *id_val = id_cnt;
                                 id_cnt += 1;
                             }
@@ -4651,7 +4674,7 @@ mod solver {
                         debug_assert!(id > 0);
                         occ.get_cost(&id_field[1], id)
                     };
-                    minf.add_cost_edge(i0, n0 + i1, 1, cost0 + cost1);
+                    minf.add_cost_edge(i0, n0 + i1, 1, (cost0 + cost1).into());
                     maxf.add_edge(i0, n0 + i1, 1);
                 }
             }
@@ -4744,10 +4767,9 @@ mod solver {
                         }
                     }
                 }
-                unmatches.sort_by(|&i, &j| {
-                    occs[i]
-                        .get_cost(id_box, (i + 1 + si * n0) as i32)
-                        .cmp(&occs[j].get_cost(id_box, (j + 1 + si * n0) as i32))
+                unmatches.sort_by_cached_key(|&i| {
+                    let val: i64 = occs[i].get_cost(id_box, (i + 1 + si * n0) as i32).into();
+                    val
                 });
                 for oi in unmatches {
                     let occ = &occs[oi];
@@ -4772,7 +4794,7 @@ mod solver {
                     let (z, y, x) = occ.points()[0];
                     occ.get_cost(&id_field[1], id_field[1][z][y][x])
                 };
-                cost0 + cost1
+                (cost0 + cost1).into()
             });
             for (oi0, oi1) in match_pairs {
                 if !Self::can_delete(&self.silhouettes[0], &id_field[0], &occs[0][oi0]) {
