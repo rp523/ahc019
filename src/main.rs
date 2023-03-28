@@ -3780,6 +3780,17 @@ mod occupancy {
                 }
             }
         }
+        pub fn to_units(&self) -> Vec<Self> {
+            let d = self.get_range().d();
+            self.points()
+                .into_iter()
+                .map(|(z, y, x)| -> Occupancy {
+                    let mut occ = Occupancy::new_empty(OccuRange::new(d, z, y, x));
+                    occ.set(z, y, x);
+                    occ
+                })
+                .collect::<Vec<_>>()
+        }
     }
     impl PartialEq for Occupancy {
         fn eq(&self, other: &Self) -> bool {
@@ -4539,48 +4550,47 @@ mod state {
         pub fn modify(
             &self,
             assigns: &[Vec<(usize, usize, usize)>],
-            d: usize,
             rand: &mut XorShift64,
         ) -> Self {
-            let (z, y, x) = assigns[0][rand.next_usize() % assigns[0].len()];
-            let own_id0 = self.id_field[0][z][y][x];
-            debug_assert!(own_id0 != 0);
-            let (z, y, x) = assigns[1][rand.next_usize() % assigns[1].len()];
-            let own_id1 = self.id_field[1][z][y][x];
-            debug_assert!(own_id1 != 0);
-            let owns = vec![own_id0, own_id1];
+            let owns = assigns.iter().zip(self.id_field.iter()).map(|(assign, id_box)| {
+                    let (z, y, x) = assign[rand.next_usize() % assign.len()];
+                    let own_id = id_box[z][y][x];
+                    debug_assert!(own_id != 0);
+                    own_id
+                })
+                .collect::<Vec<_>>();
             let mut ret = self.clone();
-            let mut id_cnt = (d * d * d) as i32;
-            debug_assert!(
-                *self
-                    .id_field
-                    .iter()
-                    .map(|id_box| id_box
+            let mut id_cnt = *self
+                .id_field
+                .iter()
+                .map(|id_box| {
+                    id_box
                         .iter()
-                        .map(|id_plane| id_plane
-                            .iter()
-                            .map(|id_line| id_line.iter().max().unwrap())
-                            .max()
-                            .unwrap())
+                        .map(|id_plane| {
+                            id_plane
+                                .iter()
+                                .map(|id_line| id_line.iter().max().unwrap())
+                                .max()
+                                .unwrap()
+                        })
                         .max()
-                        .unwrap())
-                    .max()
-                    .unwrap()
-                    < id_cnt
-            );
-            for (id_box, own) in ret.id_field.iter_mut().zip(owns.into_iter()) {
+                        .unwrap()
+                })
+                .max()
+                .unwrap();
+            for (id_box, own) in ret.id_field.iter_mut().zip(owns.iter()) {
                 for id_plane in id_box.iter_mut() {
                     for id_line in id_plane.iter_mut() {
                         for id_val in id_line.iter_mut() {
-                            if *id_val == own {
-                                *id_val = id_cnt;
+                            if id_val == own {
                                 id_cnt += 1;
+                                *id_val = id_cnt;
                             }
                         }
                     }
                 }
             }
-            if own_id0 < 0 || own_id1 < 0 {
+            if owns.into_iter().any(|own_id| own_id < 0) {
                 ret.connect_isolated_blocks();
             }
             ret
@@ -4743,36 +4753,48 @@ mod solver {
             mut occs: Vec<Vec<Occupancy>>,
             matches: Vec<BTreeMap<usize, usize>>,
         ) {
-            let n0 = occs[0].len();
             // delete isolated box, if possible.
-            for (si, ((id_box, occs), (matches, silhouette))) in id_field
+            for ((id_box, occs), (matches, silhouette)) in id_field
                 .iter_mut()
                 .zip(occs.iter_mut())
                 .zip(matches.iter().zip(self.silhouettes.iter()))
-                .enumerate()
             {
                 let mut unmatches = vec![];
-                for (oi, _occ) in occs.iter().enumerate() {
+                let mut unmatches_order = vec![];
+                let mut id_cnt = *id_box
+                    .iter()
+                    .map(|id_plane| {
+                        id_plane
+                            .iter()
+                            .map(|id_line| id_line.iter().max().unwrap())
+                            .max()
+                            .unwrap()
+                    })
+                    .max()
+                    .unwrap();
+                for (oi, occ) in occs.iter().enumerate() {
                     if matches.contains_key(&oi) {
                         continue;
                     }
-                    unmatches.push(oi);
-                }
-                if cfg!(debug_assertions) {
-                    for (i, occ) in occs.iter_mut().enumerate() {
-                        if unmatches.iter().any(|&oi| oi == i) {
-                            let (z, y, x) = occ.points()[0];
-                            let id_val = id_box[z][y][x];
-                            debug_assert!(id_val == (i + 1 + si * n0) as i32);
-                        }
+                    for (z, y, x) in occ.points() {
+                        id_cnt += 1;
+                        id_box[z][y][x] = id_cnt;
+                    }
+                    for occ in occ.to_units() {
+                        unmatches.push(occ);
+                        unmatches_order.push(unmatches_order.len());
                     }
                 }
-                unmatches.sort_by_cached_key(|&i| {
-                    let val: i64 = occs[i].get_cost(id_box, (i + 1 + si * n0) as i32).into();
+                unmatches_order.sort_by_cached_key(|&i| {
+                    let occ = &mut unmatches[i];
+                    debug_assert!(occ.eff_size() == 1);
+                    let (z, y, x) = occ.points()[0];
+                    let id_val = id_box[z][y][x];
+                    let val: i64 = occ.get_cost(id_box, id_val).into();
                     val
                 });
-                for oi in unmatches {
-                    let occ = &occs[oi];
+                for ui in unmatches_order {
+                    let occ = &unmatches[ui];
                     if Self::can_delete(silhouette, id_box, occ) {
                         occ.write_id(id_box, -1);
                     }
@@ -4797,6 +4819,8 @@ mod solver {
                 (cost0 + cost1).into()
             });
             for (oi0, oi1) in match_pairs {
+                debug_assert!(matches[0].contains_key(&oi0));
+                debug_assert!(matches[1].contains_key(&oi1));
                 if !Self::can_delete(&self.silhouettes[0], &id_field[0], &occs[0][oi0]) {
                     continue;
                 }
@@ -5028,7 +5052,7 @@ mod solver {
             let mut last = 0;
             while self.start_time.elapsed().as_millis() < 5_000 {
                 lc += 1;
-                let next_state = self.refine(pivot_state.modify(&self.assigns, self.d, &mut rand));
+                let next_state = self.refine(pivot_state.modify(&self.assigns, &mut rand));
                 let next_score = self.evaluate(&next_state.id_field);
                 if best_score.chmin(next_score) {
                     last = lc;
