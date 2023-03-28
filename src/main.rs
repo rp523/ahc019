@@ -4552,7 +4552,10 @@ mod state {
             assigns: &[Vec<(usize, usize, usize)>],
             rand: &mut XorShift64,
         ) -> Self {
-            let owns = assigns.iter().zip(self.id_field.iter()).map(|(assign, id_box)| {
+            let owns = assigns
+                .iter()
+                .zip(self.id_field.iter())
+                .map(|(assign, id_box)| {
                     let (z, y, x) = assign[rand.next_usize() % assign.len()];
                     let own_id = id_box[z][y][x];
                     debug_assert!(own_id != 0);
