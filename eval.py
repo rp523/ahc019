@@ -8,7 +8,7 @@ def calc(d):
     worst_score = 0
     worst_score_problem = None
     norm = 0
-    for i in tqdm(range(1, tot_min * 60 // 5)):
+    for i in tqdm(range(1, 1 + tot_min * 60 // 5)):
         cmd = "./scan eval < tools/" + "in{}".format(d) + "/{0:04d}.txt".format(i)
         #cmd = "./pre_bin eval < tools/" + "in{}".format(d) + "/{0:04d}.txt".format(i)
         rets = subprocess.getoutput(cmd)
