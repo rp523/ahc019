@@ -4047,13 +4047,6 @@ mod state {
             let mut state = Self { id_field };
             state.connect_isolated_blocks();
 
-            // trial
-            loop {
-                if !Self::refine(&mut state) {
-                    break;
-                }
-            }
-
             state
         }
         pub fn connect_isolated_blocks(&mut self) {
@@ -5064,6 +5057,7 @@ mod solver {
                 let next_state = self.refine(pivot_state.modify(&self.assigns, &mut rand));
                 let next_score = self.evaluate(&next_state.id_field);
                 if best_score.chmin(next_score) {
+                    //eprintln!("{}", lc);
                     best_state = next_state.clone();
                     pivot_state = next_state.clone();
                 } else if rand.next_f64() < prob_th {
@@ -5071,6 +5065,7 @@ mod solver {
                 }
                 elapsed = self.start_time.elapsed().as_millis() as u64;
             }
+            //eprintln!("{}", lc);
             self.output(best_state);
         }
     }
