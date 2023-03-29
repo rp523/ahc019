@@ -5052,28 +5052,25 @@ mod solver {
             let mut best_state = pivot_state.clone();
             let mut best_score = self.evaluate(&best_state.id_field);
             let mut lc = 0;
-            let mut last = 0;
-            let max_sec = 5.0;
-            let mut proc = 0.0;
+            let max_milli = 5_000;
             let mut prob_th = 1.0;
-            while proc < 1.0 {
+            let mut elapsed = self.start_time.elapsed().as_millis() as u64;
+            while elapsed < max_milli {
                 lc += 1;
                 if lc % 10 == 0 {
-                    proc = self.start_time.elapsed().as_secs_f64() / max_sec;
+                    let proc = elapsed as f64 / max_milli as f64;
                     prob_th = (-proc).exp();
                 }
                 let next_state = self.refine(pivot_state.modify(&self.assigns, &mut rand));
                 let next_score = self.evaluate(&next_state.id_field);
                 if best_score.chmin(next_score) {
-                    last = lc;
                     best_state = next_state.clone();
                     pivot_state = next_state.clone();
-                    eprintln!("{}", lc);
                 } else if rand.next_f64() < prob_th {
                     pivot_state = next_state.clone();
                 }
+                elapsed = self.start_time.elapsed().as_millis() as u64;
             }
-            eprintln!("{}", lc);
             self.output(best_state);
         }
     }
