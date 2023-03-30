@@ -4845,8 +4845,7 @@ mod solver {
         fn output(&self, state: State) {
             let id_field = state.id_field;
             if unsafe { !EVAL } {
-                let mut st = BTreeMap::new();
-                st.insert(0, 0);
+                let mut st = std::collections::HashMap::new();
                 for bx in id_field.iter() {
                     for plane in bx.iter() {
                         for line in plane.iter() {
@@ -4857,9 +4856,9 @@ mod solver {
                     }
                 }
                 for (i, (_, v)) in st.iter_mut().enumerate() {
-                    *v = i;
+                    *v = i + 1;
                 }
-                println!("{}", st.len() - 1);
+                println!("{}", st.len());
                 for id_box in &id_field {
                     for x in 0..self.d {
                         for y in 0..self.d {
