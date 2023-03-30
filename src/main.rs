@@ -3267,7 +3267,51 @@ mod occupancy {
     pub struct RotDir3d {
         pub dirs: Vec<RotDir>,
     }
+    pub struct RotDir3dIterator {
+        rots: Vec<RotDir3d>,
+    }
+    impl Iterator for RotDir3dIterator {
+        type Item = RotDir3d;
+        fn next(&mut self) -> Option<Self::Item> {
+            self.rots.pop()
+        }
+    }
     impl RotDir3d {
+        pub fn into_iter(self) -> RotDir3dIterator {
+            let mut rot = RotDir3d::new();
+            let mut rots = vec![];
+            for _ in 0..4 {
+                rots.push(rot.clone());
+                rot.rot_z();
+            }
+            rot.rot_x();
+            for _ in 0..4 {
+                rots.push(rot.clone());
+                rot.rot_y();
+            }
+            rot.rot_z();
+            for _ in 0..4 {
+                rots.push(rot.clone());
+                rot.rot_x();
+            }
+            rot.rot_y();
+            for _ in 0..4 {
+                rots.push(rot.clone());
+                rot.rot_z();
+            }
+            rot.rot_x();
+            for _ in 0..4 {
+                rots.push(rot.clone());
+                rot.rot_y();
+            }
+            rot.rot_z();
+            for _ in 0..4 {
+                rots.push(rot.clone());
+                rot.rot_x();
+            }
+            rot.rot_y();
+            RotDir3dIterator { rots }
+        }
         pub fn new() -> Self {
             Self {
                 dirs: (0..3).map(RotDir::new).collect::<Vec<_>>(),
@@ -3310,7 +3354,7 @@ mod occupancy {
     }
     impl From<Safety> for i64 {
         fn from(value: Safety) -> i64 {
-            value.other_dir_min as i64 * 15 * 15 * 15 + value.eff_size as i64
+            (15 * 15 * 15 - value.eff_size) as i64
         }
     }
     impl std::ops::Add<Safety> for Safety {
@@ -4044,6 +4088,22 @@ mod state {
             Self { zx, zy }
         }
     }
+    struct BfsResult {
+        dist_max: usize,
+        dist_max_pos: ((usize, usize, usize), (usize, usize, usize)),
+        dist0: Vec<Vec<Vec<Option<(usize, (usize, usize, usize), (usize, usize, usize))>>>>,
+        pre0: Vec<Vec<Vec<Option<((usize, usize, usize), (usize, usize, usize))>>>>,
+    }
+    impl BfsResult {
+        fn new(d: usize) -> Self {
+            Self {
+                dist_max: 0,
+                dist_max_pos: ((0, 0, 0), (0, 0, 0)),
+                dist0: vec![vec![vec![None; d]; d]; d],
+                pre0: vec![vec![vec![None; d]; d]; d],
+            }
+        }
+    }
     #[derive(Clone)]
     pub struct State {
         pub id_field: Vec<Vec<Vec<Vec<i32>>>>,
@@ -4397,7 +4457,7 @@ mod state {
             if flow == 0 {
                 return false;
             }
-            assert!(minf.min_cost_flow(src, dst, flow).is_some());
+            assert!(minf.min_cost_flow(src, dst, std::cmp::max(1, flow - 2)).is_some());
 
             // flow any.
             let mut id_cnt = 1;
@@ -4575,18 +4635,47 @@ mod state {
                 .max()
                 .unwrap();
             for (id_box, assign) in ret.id_field.iter_mut().zip(assigns.iter()) {
-                let (z0, y0, x0) = assign[rand.next_usize() % assign.len()];
-                let id_val0 = id_box[z0][y0][x0];
-                for &(z, y, x) in assign.iter() {
-                    let id_val = id_box[z][y][x];
-                    if id_val == id_val0 {
-                        id_cnt += 1;
-                        id_box[z][y][x] = id_cnt;
+                let mut id_pair = BTreeMap::new();
+                for &(z, y, x) in assign {
+                    let d = self.id_field[0].len();
+                    let id0 = id_box[z][y][x];
+                    debug_assert!(id0 != 0);
+                    for &(dz, dy, dx) in DELTAS.iter() {
+                        if let Some(nz) = z.move_delta(dz, 0, d - 1) {
+                            if let Some(ny) = y.move_delta(dy, 0, d - 1) {
+                                if let Some(nx) = x.move_delta(dx, 0, d - 1) {
+                                    let id1 = id_box[nz][ny][nx];
+                                    if id1 == 0 {
+                                        continue;
+                                    }
+                                    if id1 < id0 {
+                                        continue;
+                                    }
+                                    id_pair.entry(id0).or_insert(BTreeSet::new()).insert(id1);
+                                }
+                            }
+                        }
+                    }
+                }
+                let id_pair = id_pair.into_iter().map(|(id0, id1s)| id1s.into_iter().map(|id1| (id0, id1)).collect::<Vec<_>>()).collect::<Vec<_>>();
+                for _ in 0..2 {
+                    let i0 = rand.next_usize() % id_pair.len();
+                    let i1 = rand.next_usize() % id_pair[i0].len();
+                    let (id0, id1) = id_pair[i0][i1];
+                    for &rem_id in [id0, id1].iter() {
+                        for &(z, y, x) in assign.iter() {
+                            if rem_id == id_box[z][y][x] {
+                                id_cnt += 1;
+                                id_box[z][y][x] = id_cnt;            
+                            } else if id_box[z][y][x] < 0 {
+                                //id_cnt += 1;
+                                //id_box[z][y][x] = id_cnt;            
+                            }
+                        }
                     }
                 }
             }
-            Self::bfs_connect(&mut ret.id_field, assigns, rand);
-            ret
+            State{ id_field: Self::bfs_connect(ret.id_field, assigns, rand) }
         }
 
         fn is_isolated(id_box: &[Vec<Vec<i32>>], pt: (usize, usize, usize)) -> bool {
@@ -4631,17 +4720,105 @@ mod state {
             }
             false
         }
-
-        fn bfs_connect(
+        fn bfs_search(
+            ini_pt: ((usize, usize, usize), (usize, usize, usize)),
             id_field: &mut [Vec<Vec<Vec<i32>>>],
+            rand: &mut XorShift64,
+            rot01: &RotDir3d,
+        ) -> BfsResult {
+            let d = id_field[0].len();
+            let mut ret = BfsResult::new(d);
+            let mut que = VecDeque::new();
+            let ((z0, y0, x0), (z1, y1, x1)) = ini_pt;
+            que.push_back((z0, y0, x0, vec![z1, y1, x1]));
+            ret.dist0[z0][y0][x0] = Some((0, (z0, y0, x0), (z1, y1, x1)));
+            let id_val0 = id_field[0][z0][y0][x0];
+            let id_val1 = id_field[1][z1][y1][x1];
+            while let Some((z0, y0, x0, pt1)) = que.pop_front() {
+                let nd = ret.dist0[z0][y0][x0].unwrap().0 + 1;
+                for &(dz0, dy0, dx0) in DELTAS.iter() {
+                    //rand.next_permutation(6).into_iter().map(|i| DELTAS[i]) {
+                    let delta_zto = if rot01.dirs[0].sign { dz0 } else { -dz0 };
+                    let delta_yto = if rot01.dirs[1].sign { dy0 } else { -dy0 };
+                    let delta_xto = if rot01.dirs[2].sign { dx0 } else { -dx0 };
+                    if let Some(nz0) = z0.move_delta(dz0, 0, d - 1) {
+                        if let Some(nzto) = pt1[rot01.dirs[0].to].move_delta(delta_zto, 0, d - 1) {
+                            if let Some(ny0) = y0.move_delta(dy0, 0, d - 1) {
+                                if let Some(nyto) =
+                                    pt1[rot01.dirs[1].to].move_delta(delta_yto, 0, d - 1)
+                                {
+                                    if let Some(nx0) = x0.move_delta(dx0, 0, d - 1) {
+                                        if let Some(nxto) =
+                                            pt1[rot01.dirs[2].to].move_delta(delta_xto, 0, d - 1)
+                                        {
+                                            let nid0 = id_field[0][nz0][ny0][nx0];
+                                            if nid0 == 0 {
+                                                continue;
+                                            }
+                                            if ret.dist0[nz0][ny0][nx0].is_some() {
+                                                continue;
+                                            }
+                                            if !Self::is_isolated(&id_field[0], (nz0, ny0, nx0)) {
+                                                continue;
+                                            }
+                                            let mut npt1 = vec![0; 3];
+                                            npt1[rot01.dirs[0].to] = nzto;
+                                            npt1[rot01.dirs[1].to] = nyto;
+                                            npt1[rot01.dirs[2].to] = nxto;
+                                            let nid1 = id_field[1][npt1[0]][npt1[1]][npt1[2]];
+                                            if nid1 == 0 {
+                                                continue;
+                                            }
+                                            if !Self::is_isolated(
+                                                &id_field[1],
+                                                (npt1[0], npt1[1], npt1[2]),
+                                            ) {
+                                                continue;
+                                            }
+                                            ret.dist0[nz0][ny0][nx0] = Some((
+                                                nd,
+                                                (nz0, ny0, nx0),
+                                                (npt1[0], npt1[1], npt1[2]),
+                                            ));
+                                            ret.pre0[nz0][ny0][nx0] =
+                                                Some(((z0, y0, x0), (pt1[0], pt1[1], pt1[2])));
+                                            que.push_back((nz0, ny0, nx0, npt1));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            for plane in ret.dist0.iter() {
+                for line in plane.iter() {
+                    for (dist_val, pt0, pt1) in line.iter().flatten() {
+                        if ret.dist_max.chmax(*dist_val) {
+                            ret.dist_max_pos = (*pt0, *pt1);
+                        }
+                    }
+                }
+            }
+            ret
+        }
+        fn bfs_connect(
+            mut id_field: Vec<Vec<Vec<Vec<i32>>>>,
             assigns: &[Vec<(usize, usize, usize)>],
             rand: &mut XorShift64,
-        ) {
+        ) -> Vec<Vec<Vec<Vec<i32>>>> {
             let d = id_field[0].len();
-            let mut best_dist_max = 0;
-            let mut best_dist_max_pos = ((0, 0, 0), (0, 0, 0));
-            let mut best_pre0 = vec![vec![vec![None; d]; d]; d];
-            let mut best_id_vals = (0, 0);
+            let mut id_cnt = *id_field.iter()
+            .map(|id_box| id_box.iter()
+            .map(|id_plane| {
+                id_plane
+                    .iter()
+                    .map(|id_line| id_line.iter().max().unwrap())
+                    .max()
+                    .unwrap()
+            }).max().unwrap())
+            .max().unwrap();
+
             'bfs_loop: for &(z0, y0, x0) in assigns[0].iter() {
                 if !Self::is_isolated(&id_field[0], (z0, y0, x0)) {
                     continue;
@@ -4650,111 +4827,35 @@ mod state {
                     if !Self::is_isolated(&id_field[1], (z1, y1, x1)) {
                         continue;
                     }
-                    let rot01 = RotDir3d::new_rand(rand);
-                    let mut dist0 = vec![vec![vec![None; d]; d]; d];
-                    let mut pre0 = vec![vec![vec![None; d]; d]; d];
-                    let mut que = VecDeque::new();
-                    que.push_back((z0, y0, x0, vec![z1, y1, x1]));
-                    dist0[z0][y0][x0] = Some((0, (z0, y0, x0), (z1, y1, x1)));
-                    let id_val0 = id_field[0][z0][y0][x0];
-                    let id_val1 = id_field[1][z1][y1][x1];
-                    while let Some((z0, y0, x0, pt1)) = que.pop_front() {
-                        let nd = dist0[z0][y0][x0].unwrap().0 + 1;
-                        for &(dz0, dy0, dx0) in DELTAS.iter() {
-                            //rand.next_permutation(6).into_iter().map(|i| DELTAS[i]) {
-                            let delta_zto = if rot01.dirs[0].sign { dz0 } else { -dz0 };
-                            let delta_yto = if rot01.dirs[1].sign { dy0 } else { -dy0 };
-                            let delta_xto = if rot01.dirs[2].sign { dx0 } else { -dx0 };
-                            if let Some(nz0) = z0.move_delta(dz0, 0, d - 1) {
-                                if let Some(nzto) =
-                                    pt1[rot01.dirs[0].to].move_delta(delta_zto, 0, d - 1)
-                                {
-                                    if let Some(ny0) = y0.move_delta(dy0, 0, d - 1) {
-                                        if let Some(nyto) =
-                                            pt1[rot01.dirs[1].to].move_delta(delta_yto, 0, d - 1)
-                                        {
-                                            if let Some(nx0) = x0.move_delta(dx0, 0, d - 1) {
-                                                if let Some(nxto) = pt1[rot01.dirs[2].to]
-                                                    .move_delta(delta_xto, 0, d - 1)
-                                                {
-                                                    let nid0 = id_field[0][nz0][ny0][nx0];
-                                                    if nid0 == 0 {
-                                                        continue;
-                                                    }
-                                                    if dist0[nz0][ny0][nx0].is_some() {
-                                                        continue;
-                                                    }
-                                                    if !Self::is_isolated(
-                                                        &id_field[0],
-                                                        (nz0, ny0, nx0),
-                                                    ) {
-                                                        continue;
-                                                    }
-                                                    let mut npt1 = vec![0; 3];
-                                                    npt1[rot01.dirs[0].to] = nzto;
-                                                    npt1[rot01.dirs[1].to] = nyto;
-                                                    npt1[rot01.dirs[2].to] = nxto;
-                                                    let nid1 =
-                                                        id_field[1][npt1[0]][npt1[1]][npt1[2]];
-                                                    if nid1 == 0 {
-                                                        continue;
-                                                    }
-                                                    if !Self::is_isolated(
-                                                        &id_field[1],
-                                                        (npt1[0], npt1[1], npt1[2]),
-                                                    ) {
-                                                        continue;
-                                                    }
-                                                    dist0[nz0][ny0][nx0] = Some((
-                                                        nd,
-                                                        (nz0, ny0, nx0),
-                                                        (npt1[0], npt1[1], npt1[2]),
-                                                    ));
-                                                    pre0[nz0][ny0][nx0] = Some((
-                                                        (z0, y0, x0),
-                                                        (pt1[0], pt1[1], pt1[2]),
-                                                    ));
-                                                    que.push_back((nz0, ny0, nx0, npt1));
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
+                    let mut best_res = BfsResult::new(d);
+                    for rot01 in RotDir3d::new().into_iter() {
+                        let res_a =
+                            Self::bfs_search(((z0, y0, x0), (z1, y1, x1)), &mut id_field, rand, &rot01);
+                        if res_a.dist_max > 0 {
+                            let res_b = Self::bfs_search(res_a.dist_max_pos, &mut id_field, rand, &rot01);
+                            if best_res.dist_max < res_b.dist_max {
+                                best_res = res_b;
                             }
                         }
                     }
-                    let mut dist_max = 0;
-                    let mut dist_max_pos0 = (0, 0, 0);
-                    let mut dist_max_pos1 = (0, 0, 0);
-                    for plane in dist0.iter() {
-                        for line in plane.iter() {
-                            for (dist_val, pt0, pt1) in line.iter().flatten() {
-                                if dist_max.chmax(*dist_val) {
-                                    dist_max_pos0 = *pt0;
-                                    dist_max_pos1 = *pt1;
-                                }
-                            }
-                        }
-                    }
-                    if best_dist_max.chmax(dist_max) {
-                        best_dist_max_pos = (dist_max_pos0, dist_max_pos1);
-                        best_pre0 = pre0;
-                        best_id_vals = (id_val0, id_val1);
+                    id_cnt += 1;
+                    let id_val0 = id_cnt;
+                    id_cnt += 1;
+                    let id_val1 = id_cnt;
+                    let (mut pos0, mut pos1) = best_res.dist_max_pos;
+                    while let Some((pre_pos0, pre_pos1)) = best_res.pre0[pos0.0][pos0.1][pos0.2] {
+                        debug_assert!(id_field[0][pos0.0][pos0.1][pos0.2] != 0);
+                        id_field[0][pos0.0][pos0.1][pos0.2] = id_val0;
+                        debug_assert!(id_field[1][pos1.0][pos1.1][pos1.2] != 0);
+                        id_field[1][pos1.0][pos1.1][pos1.2] = id_val1;
+                        //
+                        pos0 = pre_pos0;
+                        pos1 = pre_pos1;
                     }
                     break 'bfs_loop;
                 }
             }
-            //eprintln!("best {}", best_dist_max);
-            if best_dist_max > 0 {
-                let (mut pos0, mut pos1) = best_dist_max_pos;
-                while let Some((pre_pos0, pre_pos1)) = best_pre0[pos0.0][pos0.1][pos0.2] {
-                    id_field[0][pos0.0][pos0.1][pos0.2] = best_id_vals.0;
-                    id_field[1][pos1.0][pos1.1][pos1.2] = best_id_vals.1;
-                    //
-                    pos0 = pre_pos0;
-                    pos1 = pre_pos1;
-                }
-            }
+            id_field
         }
     }
 }
@@ -5010,8 +5111,7 @@ mod solver {
         fn output(&self, state: State) {
             let id_field = state.id_field;
             if unsafe { !EVAL } {
-                let mut st = BTreeMap::new();
-                st.insert(0, 0);
+                let mut st = std::collections::HashMap::new();
                 for bx in id_field.iter() {
                     for plane in bx.iter() {
                         for line in plane.iter() {
@@ -5022,9 +5122,9 @@ mod solver {
                     }
                 }
                 for (i, (_, v)) in st.iter_mut().enumerate() {
-                    *v = i;
+                    *v = i + 1;
                 }
-                println!("{}", st.len() - 1);
+                println!("{}", st.len());
                 for id_box in &id_field {
                     for x in 0..self.d {
                         for y in 0..self.d {
@@ -5191,11 +5291,7 @@ mod solver {
         }
         fn refine(&self, org_state: &State) -> State {
             let mut ret = org_state.clone();
-            loop {
-                if !State::refine(&mut ret) {
-                    break;
-                }
-            }
+            while State::refine(&mut ret) {}
             //ret.connect_isolated_blocks();
             self.debug_id_field(&ret.id_field);
             let mut occs = ret.positive_occupancies();
@@ -5213,7 +5309,7 @@ mod solver {
             let mut best_score = self.evaluate(&best_state.id_field);
             let mut lc = 0;
             let max_milli = 5_000;
-            let prob_th0 = 0.5;
+            let prob_th0 = 0.01;
             let mut prob_th = prob_th0;
             let mut elapsed = self.start_time.elapsed().as_millis() as u64;
             while elapsed < max_milli {
@@ -5228,9 +5324,9 @@ mod solver {
                 if best_score.chmin(eval_score) {
                     //eprintln!("{}", lc);
                     best_state = eval_state.clone();
-                    pivot_state = next_state.clone();
+                    pivot_state = eval_state.clone();
                 } else if rand.next_f64() < prob_th {
-                    //pivot_state = next_state.clone();
+                //    pivot_state = next_state.clone();
                 }
                 elapsed = self.start_time.elapsed().as_millis() as u64;
             }
