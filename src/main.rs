@@ -1231,6 +1231,15 @@ mod xor_shift_64 {
         pub fn next_usize(&mut self) -> usize {
             self.next_u64() as usize
         }
+        pub fn next_permutation(&mut self, n: usize) -> Vec<usize> {
+            let mut ret = (0..n).collect::<Vec<_>>();
+            for _ in 0..(2 * n) {
+                let i = self.next_usize() % (n - 1);
+                let j = i + 1 + self.next_usize() % (n - (i + 1));
+                ret.swap(i, j);
+            }
+            ret
+        }
     }
 }
 use xor_shift_64::XorShift64;
@@ -4545,17 +4554,49 @@ mod state {
             assigns: &[Vec<(usize, usize, usize)>],
             rand: &mut XorShift64,
         ) -> Self {
+            let mut ret = self.clone();
+            let d = ret.id_field[0].len();
+            let mut merges = vec![vec![]; 2];
+            for ((assign, id_box), merge) in assigns
+                .iter()
+                .zip(ret.id_field.iter())
+                .zip(merges.iter_mut())
+            {
+                let (z, y, x) = assign[rand.next_usize() % assign.len()];
+                'box_loop: for (dz, dy, dx) in
+                    rand.next_permutation(6).into_iter().map(|i| DELTAS[i])
+                {
+                    if let Some(nz) = z.move_delta(dz, 0, d - 1) {
+                        if let Some(ny) = y.move_delta(dy, 0, d - 1) {
+                            if let Some(nx) = x.move_delta(dx, 0, d - 1) {
+                                if id_box[nz][ny][nx] == 0 {
+                                    continue;
+                                }
+                                if id_box[nz][ny][nx] == id_box[z][y][x] {
+                                    continue;
+                                }
+                                merge.push(((nz, ny, nx), (z, y, x)));
+                                break 'box_loop;
+                            }
+                        }
+                    }
+                }
+            }
             let owns = assigns
                 .iter()
-                .zip(self.id_field.iter())
-                .map(|(assign, id_box)| {
-                    let (z, y, x) = assign[rand.next_usize() % assign.len()];
-                    let own_id = id_box[z][y][x];
-                    debug_assert!(own_id != 0);
-                    own_id
+                .zip(ret.id_field.iter())
+                .enumerate()
+                .map(|(si, (assign, id_box))| {
+                    if merges[si].is_empty() {
+                        vec![]
+                    } else {
+                        let (z, y, x) = assign[rand.next_usize() % assign.len()];
+                        let own_id = id_box[z][y][x];
+                        debug_assert!(own_id != 0);
+                        vec![own_id]
+                    }
                 })
                 .collect::<Vec<_>>();
-            let mut ret = self.clone();
             let mut id_cnt = *self
                 .id_field
                 .iter()
@@ -4574,19 +4615,29 @@ mod state {
                 })
                 .max()
                 .unwrap();
-            for (id_box, own) in ret.id_field.iter_mut().zip(owns.iter()) {
+            for (id_box, merge) in ret.id_field.iter_mut().zip(merges.iter()) {
+                for &((nz, ny, nx), (z, y, x)) in merge {
+                    id_box[nz][ny][nx] = id_box[z][y][x];
+                }
+            }
+            for (id_box, owns) in ret.id_field.iter_mut().zip(owns.iter()) {
                 for id_plane in id_box.iter_mut() {
                     for id_line in id_plane.iter_mut() {
                         for id_val in id_line.iter_mut() {
-                            if id_val == own {
-                                id_cnt += 1;
-                                *id_val = id_cnt;
+                            for own in owns {
+                                if id_val == own {
+                                    id_cnt += 1;
+                                    *id_val = id_cnt;
+                                }
                             }
                         }
                     }
                 }
             }
-            if owns.into_iter().any(|own_id| own_id < 0) {
+            if owns
+                .into_iter()
+                .any(|own_ids| own_ids.iter().any(|&own_id| own_id < 0))
+            {
                 ret.connect_isolated_blocks();
             }
             ret
@@ -5024,44 +5075,47 @@ mod solver {
                 }
             }
         }
-        fn refine(&self, mut state: State) -> State {
-            //state.connect_isolated_blocks();
+        fn refine(&self, org_state: &State) -> State {
+            let mut ret = org_state.clone();
             loop {
-                if !State::refine(&mut state) {
+                if !State::refine(&mut ret) {
                     break;
                 }
             }
-            self.debug_id_field(&state.id_field);
-            let mut occs = state.positive_occupancies();
+            self.debug_id_field(&ret.id_field);
+            let mut occs = ret.positive_occupancies();
             self.debug_occupancies(&occs);
-            let (mut id_field, matches) = Self::max_match(&state, &mut occs);
-            self.debug_id_field(&id_field);
-            self.remove_useless(&mut id_field, occs, matches);
-            State { id_field }
+            let (id_field, matches) = Self::max_match(&ret, &mut occs);
+            ret.id_field = id_field;
+            self.debug_id_field(&ret.id_field);
+            self.remove_useless(&mut ret.id_field, occs, matches);
+            ret
         }
         pub fn solve(&mut self) {
             let mut rand = XorShift64::new();
-            let mut pivot_state = self.refine(State::new(&self.silhouettes, self.d));
+            let mut pivot_state = State::new(&self.silhouettes, self.d);
             let mut best_state = pivot_state.clone();
             let mut best_score = self.evaluate(&best_state.id_field);
             let mut lc = 0;
             let max_milli = 5_000;
-            let mut prob_th = 1.0;
+            let prob_th0 = 0.5;
+            let mut prob_th = prob_th0;
             let mut elapsed = self.start_time.elapsed().as_millis() as u64;
             while elapsed < max_milli {
                 lc += 1;
                 if lc % 10 == 0 {
                     let proc = elapsed as f64 / max_milli as f64;
-                    prob_th = (-proc).exp();
+                    prob_th = prob_th0 * (-proc).exp();
                 }
-                let next_state = self.refine(pivot_state.modify(&self.assigns, &mut rand));
-                let next_score = self.evaluate(&next_state.id_field);
-                if best_score.chmin(next_score) {
+                let next_state = pivot_state.modify(&self.assigns, &mut rand);
+                let eval_state = self.refine(&next_state);
+                let eval_score = self.evaluate(&eval_state.id_field);
+                if best_score.chmin(eval_score) {
                     //eprintln!("{}", lc);
-                    best_state = next_state.clone();
+                    best_state = eval_state.clone();
                     pivot_state = next_state.clone();
                 } else if rand.next_f64() < prob_th {
-                    pivot_state = next_state.clone();
+                    //pivot_state = next_state.clone();
                 }
                 elapsed = self.start_time.elapsed().as_millis() as u64;
             }
