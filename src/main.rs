@@ -4845,7 +4845,7 @@ mod solver {
         fn output(&self, state: State) {
             let id_field = state.id_field;
             if unsafe { !EVAL } {
-                let mut st = std::collections::HashMap::new();
+                let mut st = BTreeMap::new();
                 for bx in id_field.iter() {
                     for plane in bx.iter() {
                         for line in plane.iter() {
