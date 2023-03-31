@@ -3354,7 +3354,11 @@ mod occupancy {
     }
     impl From<Safety> for i64 {
         fn from(value: Safety) -> i64 {
-            (15 * 15 * 15 - value.eff_size) as i64
+            if value.other_dir_min <= 0 {
+                value.other_dir_min as i64
+            } else {
+                (15 * 15 * 15 + value.eff_size) as i64
+            }
         }
     }
     impl std::ops::Add<Safety> for Safety {
@@ -4089,18 +4093,14 @@ mod state {
         }
     }
     struct BfsResult {
-        dist_max: usize,
-        dist_max_pos: ((usize, usize, usize), (usize, usize, usize)),
-        dist0: Vec<Vec<Vec<Option<(usize, (usize, usize, usize), (usize, usize, usize))>>>>,
-        pre0: Vec<Vec<Vec<Option<((usize, usize, usize), (usize, usize, usize))>>>>,
+        dist_count: usize,
+        dist01: Vec<Vec<Vec<Option<(usize, usize, usize)>>>>,
     }
     impl BfsResult {
         fn new(d: usize) -> Self {
             Self {
-                dist_max: 0,
-                dist_max_pos: ((0, 0, 0), (0, 0, 0)),
-                dist0: vec![vec![vec![None; d]; d]; d],
-                pre0: vec![vec![vec![None; d]; d]; d],
+                dist_count: 0,
+                dist01: vec![vec![vec![None; d]; d]; d],
             }
         }
     }
@@ -4130,10 +4130,7 @@ mod state {
                     }
                 }
             }
-            let mut state = Self { id_field };
-            //state.connect_isolated_blocks();
-
-            state
+            Self { id_field }
         }
         pub fn connect_isolated_blocks(&mut self) {
             let d = self.id_field[0].len();
@@ -4457,7 +4454,9 @@ mod state {
             if flow == 0 {
                 return false;
             }
-            assert!(minf.min_cost_flow(src, dst, std::cmp::max(1, flow - 2)).is_some());
+            assert!(minf
+                .min_cost_flow(src, dst, std::cmp::max(1, flow - 2))
+                .is_some());
 
             // flow any.
             let mut id_cnt = 1;
@@ -4615,6 +4614,7 @@ mod state {
             assigns: &[Vec<(usize, usize, usize)>],
             rand: &mut XorShift64,
         ) -> Self {
+            let d = self.id_field[0].len();
             let mut ret = self.clone();
             let mut id_cnt = *self
                 .id_field
@@ -4637,7 +4637,6 @@ mod state {
             for (id_box, assign) in ret.id_field.iter_mut().zip(assigns.iter()) {
                 let mut id_pair = BTreeMap::new();
                 for &(z, y, x) in assign {
-                    let d = self.id_field[0].len();
                     let id0 = id_box[z][y][x];
                     debug_assert!(id0 != 0);
                     for &(dz, dy, dx) in DELTAS.iter() {
@@ -4648,17 +4647,17 @@ mod state {
                                     if id1 == 0 {
                                         continue;
                                     }
-                                    if id1 < id0 {
-                                        continue;
-                                    }
                                     id_pair.entry(id0).or_insert(BTreeSet::new()).insert(id1);
                                 }
                             }
                         }
                     }
                 }
-                let id_pair = id_pair.into_iter().map(|(id0, id1s)| id1s.into_iter().map(|id1| (id0, id1)).collect::<Vec<_>>()).collect::<Vec<_>>();
-                for _ in 0..2 {
+                let id_pair = id_pair
+                    .into_iter()
+                    .map(|(id0, id1s)| id1s.into_iter().map(|id1| (id0, id1)).collect::<Vec<_>>())
+                    .collect::<Vec<_>>();
+                for _ in 0..(if d <= 6 { 2 } else { 1 }) {
                     let i0 = rand.next_usize() % id_pair.len();
                     let i1 = rand.next_usize() % id_pair[i0].len();
                     let (id0, id1) = id_pair[i0][i1];
@@ -4666,16 +4665,19 @@ mod state {
                         for &(z, y, x) in assign.iter() {
                             if rem_id == id_box[z][y][x] {
                                 id_cnt += 1;
-                                id_box[z][y][x] = id_cnt;            
+                                id_box[z][y][x] = id_cnt;
                             } else if id_box[z][y][x] < 0 {
                                 //id_cnt += 1;
-                                //id_box[z][y][x] = id_cnt;            
+                                //id_box[z][y][x] = id_cnt;
                             }
                         }
                     }
                 }
             }
-            State{ id_field: Self::bfs_connect(ret.id_field, assigns, rand) }
+            for _ in 0..2 {
+                ret.id_field = Self::bfs_connect(ret.id_field, assigns, rand);
+            }
+            ret
         }
 
         fn is_isolated(id_box: &[Vec<Vec<i32>>], pt: (usize, usize, usize)) -> bool {
@@ -4722,8 +4724,7 @@ mod state {
         }
         fn bfs_search(
             ini_pt: ((usize, usize, usize), (usize, usize, usize)),
-            id_field: &mut [Vec<Vec<Vec<i32>>>],
-            rand: &mut XorShift64,
+            id_field: &[Vec<Vec<Vec<i32>>>],
             rot01: &RotDir3d,
         ) -> BfsResult {
             let d = id_field[0].len();
@@ -4731,11 +4732,9 @@ mod state {
             let mut que = VecDeque::new();
             let ((z0, y0, x0), (z1, y1, x1)) = ini_pt;
             que.push_back((z0, y0, x0, vec![z1, y1, x1]));
-            ret.dist0[z0][y0][x0] = Some((0, (z0, y0, x0), (z1, y1, x1)));
-            let id_val0 = id_field[0][z0][y0][x0];
-            let id_val1 = id_field[1][z1][y1][x1];
+            ret.dist01[z0][y0][x0] = Some((z1, y1, x1));
+            ret.dist_count += 1;
             while let Some((z0, y0, x0, pt1)) = que.pop_front() {
-                let nd = ret.dist0[z0][y0][x0].unwrap().0 + 1;
                 for &(dz0, dy0, dx0) in DELTAS.iter() {
                     //rand.next_permutation(6).into_iter().map(|i| DELTAS[i]) {
                     let delta_zto = if rot01.dirs[0].sign { dz0 } else { -dz0 };
@@ -4755,7 +4754,7 @@ mod state {
                                             if nid0 == 0 {
                                                 continue;
                                             }
-                                            if ret.dist0[nz0][ny0][nx0].is_some() {
+                                            if ret.dist01[nz0][ny0][nx0].is_some() {
                                                 continue;
                                             }
                                             if !Self::is_isolated(&id_field[0], (nz0, ny0, nx0)) {
@@ -4775,27 +4774,14 @@ mod state {
                                             ) {
                                                 continue;
                                             }
-                                            ret.dist0[nz0][ny0][nx0] = Some((
-                                                nd,
-                                                (nz0, ny0, nx0),
-                                                (npt1[0], npt1[1], npt1[2]),
-                                            ));
-                                            ret.pre0[nz0][ny0][nx0] =
-                                                Some(((z0, y0, x0), (pt1[0], pt1[1], pt1[2])));
+                                            ret.dist01[nz0][ny0][nx0] =
+                                                Some((npt1[0], npt1[1], npt1[2]));
+                                            ret.dist_count += 1;
                                             que.push_back((nz0, ny0, nx0, npt1));
                                         }
                                     }
                                 }
                             }
-                        }
-                    }
-                }
-            }
-            for plane in ret.dist0.iter() {
-                for line in plane.iter() {
-                    for (dist_val, pt0, pt1) in line.iter().flatten() {
-                        if ret.dist_max.chmax(*dist_val) {
-                            ret.dist_max_pos = (*pt0, *pt1);
                         }
                     }
                 }
@@ -4808,51 +4794,60 @@ mod state {
             rand: &mut XorShift64,
         ) -> Vec<Vec<Vec<Vec<i32>>>> {
             let d = id_field[0].len();
-            let mut id_cnt = *id_field.iter()
-            .map(|id_box| id_box.iter()
-            .map(|id_plane| {
-                id_plane
-                    .iter()
-                    .map(|id_line| id_line.iter().max().unwrap())
-                    .max()
-                    .unwrap()
-            }).max().unwrap())
-            .max().unwrap();
+            let mut id_cnt = *id_field
+                .iter()
+                .map(|id_box| {
+                    id_box
+                        .iter()
+                        .map(|id_plane| {
+                            id_plane
+                                .iter()
+                                .map(|id_line| id_line.iter().max().unwrap())
+                                .max()
+                                .unwrap()
+                        })
+                        .max()
+                        .unwrap()
+                })
+                .max()
+                .unwrap();
 
-            'bfs_loop: for &(z0, y0, x0) in assigns[0].iter() {
+            let mut best_res = BfsResult::new(d);
+            'bfs_loop: for (z0, y0, x0) in rand
+                .next_permutation(assigns[0].len())
+                .into_iter()
+                .map(|i| assigns[0][i])
+            {
                 if !Self::is_isolated(&id_field[0], (z0, y0, x0)) {
                     continue;
                 }
-                for &(z1, y1, x1) in assigns[1].iter() {
+                for (z1, y1, x1) in rand
+                    .next_permutation(assigns[1].len())
+                    .into_iter()
+                    .map(|i| assigns[1][i])
+                {
                     if !Self::is_isolated(&id_field[1], (z1, y1, x1)) {
                         continue;
                     }
-                    let mut best_res = BfsResult::new(d);
                     for rot01 in RotDir3d::new().into_iter() {
-                        let res_a =
-                            Self::bfs_search(((z0, y0, x0), (z1, y1, x1)), &mut id_field, rand, &rot01);
-                        if res_a.dist_max > 0 {
-                            let res_b = Self::bfs_search(res_a.dist_max_pos, &mut id_field, rand, &rot01);
-                            if best_res.dist_max < res_b.dist_max {
-                                best_res = res_b;
-                            }
+                        let res = Self::bfs_search(((z0, y0, x0), (z1, y1, x1)), &id_field, &rot01);
+                        if best_res.dist_count.chmax(res.dist_count) {
+                            best_res.dist01 = res.dist01;
                         }
                     }
-                    id_cnt += 1;
-                    let id_val0 = id_cnt;
-                    id_cnt += 1;
-                    let id_val1 = id_cnt;
-                    let (mut pos0, mut pos1) = best_res.dist_max_pos;
-                    while let Some((pre_pos0, pre_pos1)) = best_res.pre0[pos0.0][pos0.1][pos0.2] {
-                        debug_assert!(id_field[0][pos0.0][pos0.1][pos0.2] != 0);
-                        id_field[0][pos0.0][pos0.1][pos0.2] = id_val0;
-                        debug_assert!(id_field[1][pos1.0][pos1.1][pos1.2] != 0);
-                        id_field[1][pos1.0][pos1.1][pos1.2] = id_val1;
-                        //
-                        pos0 = pre_pos0;
-                        pos1 = pre_pos1;
-                    }
                     break 'bfs_loop;
+                }
+            }
+            if best_res.dist_count > 0 {
+                id_cnt += 1;
+                let id_val0 = id_cnt;
+                id_cnt += 1;
+                let id_val1 = id_cnt;
+                for &(z0, y0, x0) in assigns[0].iter() {
+                    if let Some((z1, y1, x1)) = best_res.dist01[z0][y0][x0] {
+                        id_field[0][z0][y0][x0] = id_val0;
+                        id_field[1][z1][y1][x1] = id_val1;
+                    }
                 }
             }
             id_field
@@ -4908,15 +4903,14 @@ mod solver {
         }
         #[allow(clippy::type_complexity)]
         fn max_match(
-            org_state: &State,
+            state: &mut State,
             occs: &mut [Vec<Occupancy>],
-        ) -> (Vec<Vec<Vec<Vec<i32>>>>, Vec<BTreeMap<usize, usize>>) {
+        ) -> Vec<BTreeMap<usize, usize>> {
             let n0 = occs[0].len();
             let n1 = occs[1].len();
 
-            let mut id_field = org_state.id_field.clone();
             let mut id_val = 0;
-            for (id_box, occs) in id_field.iter_mut().zip(occs.iter()) {
+            for (id_box, occs) in state.id_field.iter_mut().zip(occs.iter()) {
                 for occ in occs.iter() {
                     id_val += 1;
                     occ.write_id(id_box, id_val);
@@ -4935,16 +4929,16 @@ mod solver {
                     let cost0 = {
                         let occ = &mut occs[0][i0];
                         let (z, y, x) = occ.points()[0];
-                        let id = id_field[0][z][y][x];
+                        let id = state.id_field[0][z][y][x];
                         debug_assert!(id > 0);
-                        occ.get_cost(&id_field[0], id)
+                        occ.get_cost(&state.id_field[0], id)
                     };
                     let cost1 = {
                         let occ = &mut occs[1][i1];
                         let (z, y, x) = occ.points()[0];
-                        let id = id_field[1][z][y][x];
+                        let id = state.id_field[1][z][y][x];
                         debug_assert!(id > 0);
-                        occ.get_cost(&id_field[1], id)
+                        occ.get_cost(&state.id_field[1], id)
                     };
                     minf.add_cost_edge(i0, n0 + i1, 1, (cost0 + cost1).into());
                     maxf.add_edge(i0, n0 + i1, 1);
@@ -4976,10 +4970,10 @@ mod solver {
                     st[0].insert(i0, i1);
                     st[1].insert(i1, i0);
                     let o1 = &occs[1][i1];
-                    o1.write_id(&mut id_field[1], id0_val);
+                    o1.write_id(&mut state.id_field[1], id0_val);
                 }
             }
-            (id_field, st)
+            st
         }
         fn zx_any(id_box: &[Vec<Vec<i32>>], sz: usize, sx: usize, id_val: i32) -> bool {
             let d = id_box.len();
@@ -5015,6 +5009,43 @@ mod solver {
             mut occs: Vec<Vec<Occupancy>>,
             matches: Vec<BTreeMap<usize, usize>>,
         ) {
+            let mut id_cnt = *id_field
+                .iter()
+                .map(|id_box| {
+                    id_box
+                        .iter()
+                        .map(|id_plane| {
+                            id_plane
+                                .iter()
+                                .map(|id_line| id_line.iter().max().unwrap())
+                                .max()
+                                .unwrap()
+                        })
+                        .max()
+                        .unwrap()
+                })
+                .max()
+                .unwrap();
+            let mut id_cnt_min = std::cmp::min(
+                -1,
+                *id_field
+                    .iter()
+                    .map(|id_box| {
+                        id_box
+                            .iter()
+                            .map(|id_plane| {
+                                id_plane
+                                    .iter()
+                                    .map(|id_line| id_line.iter().max().unwrap())
+                                    .min()
+                                    .unwrap()
+                            })
+                            .min()
+                            .unwrap()
+                    })
+                    .min()
+                    .unwrap(),
+            );
             // delete isolated box, if possible.
             for ((id_box, occs), (matches, silhouette)) in id_field
                 .iter_mut()
@@ -5023,17 +5054,6 @@ mod solver {
             {
                 let mut unmatches = vec![];
                 let mut unmatches_order = vec![];
-                let mut id_cnt = *id_box
-                    .iter()
-                    .map(|id_plane| {
-                        id_plane
-                            .iter()
-                            .map(|id_line| id_line.iter().max().unwrap())
-                            .max()
-                            .unwrap()
-                    })
-                    .max()
-                    .unwrap();
                 for (oi, occ) in occs.iter().enumerate() {
                     if matches.contains_key(&oi) {
                         continue;
@@ -5058,7 +5078,8 @@ mod solver {
                 for ui in unmatches_order {
                     let occ = &unmatches[ui];
                     if Self::can_delete(silhouette, id_box, occ) {
-                        occ.write_id(id_box, -1);
+                        id_cnt_min -= 1;
+                        occ.write_id(id_box, id_cnt_min);
                     }
                 }
             }
@@ -5089,8 +5110,10 @@ mod solver {
                 if !Self::can_delete(&self.silhouettes[1], &id_field[1], &occs[1][oi1]) {
                     continue;
                 }
-                occs[0][oi0].write_id(&mut id_field[0], -1);
-                occs[1][oi1].write_id(&mut id_field[1], -1);
+                id_cnt_min -= 1;
+                occs[0][oi0].write_id(&mut id_field[0], id_cnt_min);
+                id_cnt_min -= 1;
+                occs[1][oi1].write_id(&mut id_field[1], id_cnt_min);
             }
         }
         fn can_delete(silhouette: &Silhouette, id_box: &[Vec<Vec<i32>>], occ: &Occupancy) -> bool {
@@ -5289,18 +5312,15 @@ mod solver {
                 }
             }
         }
-        fn refine(&self, org_state: &State) -> State {
-            let mut ret = org_state.clone();
-            while State::refine(&mut ret) {}
+        fn refine(&self, state: &mut State) {
+            while State::refine(state) {}
             //ret.connect_isolated_blocks();
-            self.debug_id_field(&ret.id_field);
-            let mut occs = ret.positive_occupancies();
+            self.debug_id_field(&state.id_field);
+            let mut occs = state.positive_occupancies();
             self.debug_occupancies(&occs);
-            let (id_field, matches) = Self::max_match(&ret, &mut occs);
-            ret.id_field = id_field;
-            self.debug_id_field(&ret.id_field);
-            self.remove_useless(&mut ret.id_field, occs, matches);
-            ret
+            let matches = Self::max_match(state, &mut occs);
+            self.debug_id_field(&state.id_field);
+            self.remove_useless(&mut state.id_field, occs, matches);
         }
         pub fn solve(&mut self) {
             let mut rand = XorShift64::new();
@@ -5318,15 +5338,15 @@ mod solver {
                     let proc = elapsed as f64 / max_milli as f64;
                     prob_th = prob_th0 * (-proc).exp();
                 }
-                let next_state = pivot_state.modify(&self.assigns, &mut rand);
-                let eval_state = self.refine(&next_state);
-                let eval_score = self.evaluate(&eval_state.id_field);
-                if best_score.chmin(eval_score) {
+                let mut next_state = pivot_state.modify(&self.assigns, &mut rand);
+                self.refine(&mut next_state);
+                let next_score = self.evaluate(&next_state.id_field);
+                if best_score.chmin(next_score) {
                     //eprintln!("{}", lc);
-                    best_state = eval_state.clone();
-                    pivot_state = eval_state.clone();
+                    best_state = next_state.clone();
+                    pivot_state = next_state.clone();
                 } else if rand.next_f64() < prob_th {
-                //    pivot_state = next_state.clone();
+                    //    pivot_state = next_state.clone();
                 }
                 elapsed = self.start_time.elapsed().as_millis() as u64;
             }
