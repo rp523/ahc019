@@ -4455,7 +4455,7 @@ mod state {
                 return false;
             }
             assert!(minf
-                .min_cost_flow(src, dst, std::cmp::max(1, flow - 2))
+                .min_cost_flow(src, dst, std::cmp::max(1, flow - 1))
                 .is_some());
 
             // flow any.
@@ -4634,7 +4634,13 @@ mod state {
                 })
                 .max()
                 .unwrap();
-            for (id_box, assign) in ret.id_field.iter_mut().zip(assigns.iter()) {
+            let mut origin_buf = vec![vec![]; 2];
+            for ((id_box, assign), origin_buf) in ret
+                .id_field
+                .iter_mut()
+                .zip(assigns.iter())
+                .zip(origin_buf.iter_mut())
+            {
                 let mut id_pair = BTreeMap::new();
                 for &(z, y, x) in assign {
                     let id0 = id_box[z][y][x];
@@ -4647,20 +4653,22 @@ mod state {
                                     if id1 == 0 {
                                         continue;
                                     }
-                                    id_pair.entry(id0).or_insert(BTreeSet::new()).insert(id1);
+                                    let min_id = std::cmp::min(id0, id1);
+                                    let max_id = std::cmp::max(id0, id1);
+                                    id_pair.insert((min_id, max_id), (z, y, x));
                                 }
                             }
                         }
                     }
                 }
-                let id_pair = id_pair
-                    .into_iter()
-                    .map(|(id0, id1s)| id1s.into_iter().map(|id1| (id0, id1)).collect::<Vec<_>>())
-                    .collect::<Vec<_>>();
+
+                let id_pair = id_pair.into_iter().collect::<Vec<_>>();
                 for _ in 0..(if d <= 6 { 2 } else { 1 }) {
                     let i0 = rand.next_usize() % id_pair.len();
-                    let i1 = rand.next_usize() % id_pair[i0].len();
-                    let (id0, id1) = id_pair[i0][i1];
+                    let ((id0, id1), pt) = id_pair[i0];
+                    if d >= 8 {
+                        origin_buf.push(pt);
+                    }
                     for &rem_id in [id0, id1].iter() {
                         for &(z, y, x) in assign.iter() {
                             if rem_id == id_box[z][y][x] {
@@ -4672,10 +4680,11 @@ mod state {
                             }
                         }
                     }
+                    debug_assert!(Self::can_move_to_isolated(id_box, pt));
                 }
             }
             for _ in 0..2 {
-                ret.id_field = Self::bfs_connect(ret.id_field, assigns, rand);
+                ret.id_field = Self::bfs_connect(ret.id_field, assigns, rand, &mut origin_buf);
             }
             ret
         }
@@ -4792,6 +4801,7 @@ mod state {
             mut id_field: Vec<Vec<Vec<Vec<i32>>>>,
             assigns: &[Vec<(usize, usize, usize)>],
             rand: &mut XorShift64,
+            origin_buf: &mut [Vec<(usize, usize, usize)>],
         ) -> Vec<Vec<Vec<Vec<i32>>>> {
             let d = id_field[0].len();
             let mut id_cnt = *id_field
@@ -4813,29 +4823,42 @@ mod state {
                 .unwrap();
 
             let mut best_res = BfsResult::new(d);
-            'bfs_loop: for (z0, y0, x0) in rand
-                .next_permutation(assigns[0].len())
-                .into_iter()
-                .map(|i| assigns[0][i])
-            {
-                if !Self::is_isolated(&id_field[0], (z0, y0, x0)) {
-                    continue;
+            if !origin_buf.iter().any(|buf| buf.is_empty()) {
+                let pt0 = origin_buf[0].pop().unwrap();
+                let pt1 = origin_buf[1].pop().unwrap();
+                for rot01 in RotDir3d::new().into_iter() {
+                    let res = Self::bfs_search((pt0, pt1), &id_field, &rot01);
+                    if best_res.dist_count.chmax(res.dist_count) {
+                        best_res.dist01 = res.dist01;
+                    }
                 }
-                for (z1, y1, x1) in rand
-                    .next_permutation(assigns[1].len())
+                debug_assert!(best_res.dist_count >= 2);
+            } else {
+                'bfs_loop: for (z0, y0, x0) in rand
+                    .next_permutation(assigns[0].len())
                     .into_iter()
-                    .map(|i| assigns[1][i])
+                    .map(|i| assigns[0][i])
                 {
-                    if !Self::is_isolated(&id_field[1], (z1, y1, x1)) {
+                    if !Self::is_isolated(&id_field[0], (z0, y0, x0)) {
                         continue;
                     }
-                    for rot01 in RotDir3d::new().into_iter() {
-                        let res = Self::bfs_search(((z0, y0, x0), (z1, y1, x1)), &id_field, &rot01);
-                        if best_res.dist_count.chmax(res.dist_count) {
-                            best_res.dist01 = res.dist01;
+                    for (z1, y1, x1) in rand
+                        .next_permutation(assigns[1].len())
+                        .into_iter()
+                        .map(|i| assigns[1][i])
+                    {
+                        if !Self::is_isolated(&id_field[1], (z1, y1, x1)) {
+                            continue;
                         }
+                        for rot01 in RotDir3d::new().into_iter() {
+                            let res =
+                                Self::bfs_search(((z0, y0, x0), (z1, y1, x1)), &id_field, &rot01);
+                            if best_res.dist_count.chmax(res.dist_count) {
+                                best_res.dist01 = res.dist01;
+                            }
+                        }
+                        break 'bfs_loop;
                     }
-                    break 'bfs_loop;
                 }
             }
             if best_res.dist_count > 0 {
