@@ -18,7 +18,7 @@ def calc_score(d):
         t1 = time.time()
         t01 = t1 - t0
         try:
-            score = int(rets.split("\n")[-1])
+            score = float(rets.split("\n")[-1]) / 1000000000
             if max_time < t01:
                 max_time = t01
         except:

@@ -5350,17 +5350,11 @@ mod solver {
             let mut pivot_state = State::new(&self.silhouettes, self.d);
             let mut best_state = pivot_state.clone();
             let mut best_score = self.evaluate(&best_state.id_field);
+            #[allow(unused_variables)]
             let mut lc = 0;
-            let max_milli = 5_000;
-            let prob_th0 = 0.01;
-            let mut prob_th = prob_th0;
-            let mut elapsed = self.start_time.elapsed().as_millis() as u64;
-            while elapsed < max_milli {
+            let max_milli = 5_600;
+            while self.start_time.elapsed().as_millis() < max_milli {
                 lc += 1;
-                if lc % 10 == 0 {
-                    let proc = elapsed as f64 / max_milli as f64;
-                    prob_th = prob_th0 * (-proc).exp();
-                }
                 let mut next_state = pivot_state.modify(&self.assigns, &mut rand);
                 self.refine(&mut next_state);
                 let next_score = self.evaluate(&next_state.id_field);
@@ -5368,10 +5362,7 @@ mod solver {
                     //eprintln!("{}", lc);
                     best_state = next_state.clone();
                     pivot_state = next_state.clone();
-                } else if rand.next_f64() < prob_th {
-                    //    pivot_state = next_state.clone();
                 }
-                elapsed = self.start_time.elapsed().as_millis() as u64;
             }
             //eprintln!("{}", lc);
             self.output(best_state);
