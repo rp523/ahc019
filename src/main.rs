@@ -4645,17 +4645,19 @@ mod state {
                 for &(z, y, x) in assign {
                     let id0 = id_box[z][y][x];
                     debug_assert!(id0 != 0);
+                    let pt0 = (z, y, x);
                     for &(dz, dy, dx) in DELTAS.iter() {
                         if let Some(nz) = z.move_delta(dz, 0, d - 1) {
                             if let Some(ny) = y.move_delta(dy, 0, d - 1) {
                                 if let Some(nx) = x.move_delta(dx, 0, d - 1) {
                                     let id1 = id_box[nz][ny][nx];
-                                    if id1 == 0 {
+                                    if id1 == 0 || id1 == id0 {
                                         continue;
                                     }
+                                    let pt1 = (nz, ny, nx);
                                     let min_id = std::cmp::min(id0, id1);
                                     let max_id = std::cmp::max(id0, id1);
-                                    id_pair.insert((min_id, max_id), (z, y, x));
+                                    id_pair.insert((min_id, max_id), (pt0, pt1));
                                 }
                             }
                         }
@@ -4664,23 +4666,25 @@ mod state {
 
                 let id_pair = id_pair.into_iter().collect::<Vec<_>>();
                 for _ in 0..(if d <= 6 { 2 } else { 1 }) {
-                    let i0 = rand.next_usize() % id_pair.len();
-                    let ((id0, id1), pt) = id_pair[i0];
-                    if d >= 8 {
-                        origin_buf.push(pt);
+                    if id_pair.is_empty() {
+                        continue;
                     }
-                    for &rem_id in [id0, id1].iter() {
-                        for &(z, y, x) in assign.iter() {
-                            if rem_id == id_box[z][y][x] {
-                                id_cnt += 1;
-                                id_box[z][y][x] = id_cnt;
-                            } else if id_box[z][y][x] < 0 {
-                                //id_cnt += 1;
-                                //id_box[z][y][x] = id_cnt;
-                            }
+                    let i0 = rand.next_usize() % id_pair.len();
+                    let ((id0, id1), (pt0, pt1)) = id_pair[i0];
+                    if d >= 9 {
+                        origin_buf.push(vec![pt0, pt1]);
+                    }
+                    for &(z, y, x) in assign.iter() {
+                        if id0 == id_box[z][y][x] || id1 == id_box[z][y][x] {
+                            id_cnt += 1;
+                            id_box[z][y][x] = id_cnt;
+                        } else if id_box[z][y][x] < 0 {
+                            //id_cnt += 1;
+                            //id_box[z][y][x] = id_cnt;
                         }
                     }
-                    debug_assert!(Self::can_move_to_isolated(id_box, pt));
+                    debug_assert!(Self::can_move_to_isolated(id_box, pt0));
+                    debug_assert!(Self::can_move_to_isolated(id_box, pt1));
                 }
             }
             for _ in 0..2 {
@@ -4801,7 +4805,7 @@ mod state {
             mut id_field: Vec<Vec<Vec<Vec<i32>>>>,
             assigns: &[Vec<(usize, usize, usize)>],
             rand: &mut XorShift64,
-            origin_buf: &mut [Vec<(usize, usize, usize)>],
+            origin_buf: &mut [Vec<Vec<(usize, usize, usize)>>],
         ) -> Vec<Vec<Vec<Vec<i32>>>> {
             let d = id_field[0].len();
             let mut id_cnt = *id_field
@@ -4824,12 +4828,16 @@ mod state {
 
             let mut best_res = BfsResult::new(d);
             if !origin_buf.iter().any(|buf| buf.is_empty()) {
-                let pt0 = origin_buf[0].pop().unwrap();
-                let pt1 = origin_buf[1].pop().unwrap();
-                for rot01 in RotDir3d::new().into_iter() {
-                    let res = Self::bfs_search((pt0, pt1), &id_field, &rot01);
-                    if best_res.dist_count.chmax(res.dist_count) {
-                        best_res.dist01 = res.dist01;
+                let pts0 = origin_buf[0].pop().unwrap();
+                let pts1 = origin_buf[1].pop().unwrap();
+                for &pt0 in &pts0 {
+                    for &pt1 in pts1.iter().take(1) {
+                        for rot01 in RotDir3d::new().into_iter() {
+                            let res = Self::bfs_search((pt0, pt1), &id_field, &rot01);
+                            if best_res.dist_count.chmax(res.dist_count) {
+                                best_res.dist01 = res.dist01;
+                            }
+                        }
                     }
                 }
                 debug_assert!(best_res.dist_count >= 2);
