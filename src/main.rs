@@ -5344,7 +5344,7 @@ mod solver {
             }
         }
         fn refine(&self, state: &mut State) {
-            // while State::refine(state) {}
+            while State::refine(state) {}
             //ret.connect_isolated_blocks();
             self.debug_id_field(&state.id_field);
             let mut occs = state.positive_occupancies();
@@ -5364,11 +5364,6 @@ mod solver {
             while self.start_time.elapsed().as_millis() < max_milli {
                 lc += 1;
                 let mut next_state = pivot_state.modify(&self.assigns, &mut rand);
-                if self.d <= 6 {
-                    while State::refine(&mut next_state) {}
-                } else if rand.next_usize() % 2 == 0 {
-                    while State::refine(&mut next_state) {}
-                }
                 self.refine(&mut next_state);
                 let next_score = self.evaluate(&next_state.id_field);
                 if best_score.chmin(next_score) {
